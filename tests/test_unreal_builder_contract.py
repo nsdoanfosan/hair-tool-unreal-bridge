@@ -56,13 +56,18 @@ class TestUnrealBuilderContract(unittest.TestCase):
             'BLEND_FUNCTION = "/Game/CC_Shaders/HairShader/Source/Functions/blendFunc"',
             self.source,
         )
-        self.assertIn("RFAOS_UV_TAG = 4.0", self.source)
+        self.assertIn("SYSTEM_COLOR_UV_INDEX = 1", self.source)
+        self.assertIn("RFAOS_UV_TAG = 6.0", self.source)
         self.assertIn("65535.0", self.source)
         self.assertIn("256.0", self.source)
 
-    def test_contract_v2_can_override_legacy_system_color_preservation(self):
+    def test_contract_v3_uses_direct_system_color_rgb(self):
         self.assertIn("sync_parameters = set", self.source)
         self.assertIn("param not in sync_parameters", self.source)
+        self.assertIn("system_color_rgb", self.source)
+        self.assertNotIn('vector(material, "System Color 01"', self.source)
+        self.assertNotIn('vector(material, "System Color 02"', self.source)
+        self.assertNotIn('scalar(material, "System Mask Contrast"', self.source)
 
     def test_material_instance_groups_mirror_the_blender_panel(self):
         expected_groups = (

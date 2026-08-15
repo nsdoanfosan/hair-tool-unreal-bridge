@@ -91,24 +91,7 @@ class HTUE_MaterialSettings(bpy.types.PropertyGroup):
     depth_tint_influence: unit_property("Depth Tint Influence", 0.0)
     depth_blend_mode: blend_property("Depth Blend Mode", "OVERLAY")
 
-    system_color_01: color_property("System Color 01", (0.0, 0.0, 0.0, 1.0))
-    system_color_02: color_property("System Color 02", (1.0, 1.0, 1.0, 1.0))
     system_color_influence: unit_property("System Color Influence", 1.0)
-    system_mask_contrast: FloatProperty(
-        name="System Mask Contrast",
-        min=0.0,
-        max=8.0,
-        default=1.0,
-        update=_update_settings,
-    )
-    system_mask_bias: FloatProperty(
-        name="System Mask Bias",
-        min=-1.0,
-        max=1.0,
-        default=0.0,
-        update=_update_settings,
-    )
-    system_mask_invert: unit_property("System Mask Invert", 0.0)
     system_blend_mode: blend_property("System Blend Mode", "ADD")
 
     ao_strength: unit_property("AO Strength", 1.0)

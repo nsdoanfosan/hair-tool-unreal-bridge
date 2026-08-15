@@ -80,8 +80,6 @@ mesh.materials.append(material)
 system_colors = mesh.attributes.new("SystemColor", "BYTE_COLOR", "POINT")
 system_colors.data[0].color = (0.1, 0.2, 0.3, 0.0)
 system_colors.data[1].color = (0.8, 0.6, 0.4, 1.0)
-expected_system_01 = tuple(system_colors.data[0].color[:3])
-expected_system_02 = tuple(system_colors.data[1].color[:3])
 source_object = bpy.data.objects.new("HTUE_Deformer_Source", mesh)
 bpy.context.scene.collection.objects.link(source_object)
 
@@ -98,11 +96,12 @@ assert shader.inputs["Root Color Mix Factor"].default_value == 1.0
 assert not shader.inputs["Root Color Mix Factor"].is_linked
 assert stack.inputs["System Attribute Color"].links[0].from_node.bl_idname == "NodeGroupInput"
 assert shader.node_tree.nodes["Hair Tool Final Color"].inputs[0].links[0].from_node == stack
-assert shader.inputs["HTUE System Mask"].links[0].from_node == system
+assert shader.inputs.get("HTUE System Mask") is None
 assert material.htue_settings.initialized
-assert all(abs(a - b) < 1.0e-4 for a, b in zip(material.htue_settings.system_color_01, expected_system_01))
-assert all(abs(a - b) < 1.0e-4 for a, b in zip(material.htue_settings.system_color_02, expected_system_02))
 assert contract.validate_material(material) == []
+saved_v3 = schema.loads_contract(material[schema.CONTRACT_PROPERTY])
+assert saved_v3["version"] == 3
+assert not saved_v3["hair_tool"]["vertex_uv_payload"]["system_color_alpha_used"]
 
 material.htue_settings.root_blend_mode = "OVERLAY"
 assert stack.inputs["Root Blend Mode"].default_value == 2.0

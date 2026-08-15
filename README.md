@@ -2,7 +2,7 @@
 
 Sidecar Blender add-on and Unreal material builder for keeping Hair Tool card
 color controls readable and synchronized across Blender 5.1 and Unreal Engine
-5.7. It does not modify Hair Tool's own add-on files or node groups.
+5.8. It does not modify Hair Tool's own add-on files or node groups.
 
 ## What is synchronized
 
@@ -18,8 +18,7 @@ and Unreal:
 3. Tip (`RFAOS.G`, optionally `OneMinus(IRD Map.G)`)
 4. ID tint (`RFAOS.R` or `IRD Map.R`)
 5. Depth tint (`Depth` vertex attribute or `IRD Map.B`)
-6. System Color (Hair Tool `SystemColor.RGB` in Blender; `RFAOS.A` selects the
-   synchronized `System Color 01` or `System Color 02` in Unreal)
+6. System Color (evaluated Hair Tool `SystemColor.RGB` in both renderers)
 7. AO (`RFAOS.B` and `ORM Map.R`)
 
 Each color stage exposes `Normal`, `Multiply`, `Overlay`, `Soft Light`, and
@@ -39,18 +38,20 @@ preview; the bridge does not force the expensive AO generator on.
 
 Every configured Blender material stores a versioned JSON contract in the
 `htue_contract_json` custom property. The existing unique-name exporter asks
-this sidecar to refresh live Hair Tool inputs and Deformer colors immediately
-before it reads the property. The two dominant `SystemColor.RGB` values are
-classified by the original Alpha channel. Geometry Nodes-evaluated Deformer
-output is preferred over stale converted meshes when both are present.
+this sidecar to refresh live Hair Tool material inputs immediately before it
+reads the property. SystemColor is transported per vertex from the
+evaluated Geometry Nodes output; its Alpha channel is ignored.
 
 Send to Unreal exports:
 
-- Vertex color `RFAOS`: Random, Factor, AO, System alpha.
+- UV0: card texture coordinates.
+- UV1: linear `SystemColor.RG`.
 - UV2: tagged, packed Random + Depth and Factor.
-- UV3: tagged AO and System alpha.
+- UV3: tagged AO and linear `SystemColor.B`.
+- Vertex color `RFAOS`: Random, Factor, AO, and a reserved legacy fallback.
 - Flow, IRD, ORM, and Opacity texture roles.
 
+All four skeletal UV sets and both components are occupied in contract v3.
 UV2's Random+Depth pair is two UNORM8 values. Send to Unreal forces full
 precision UV build settings for Hair Tool skeletal meshes so the pair remains
 decodable with Skeletal Nanite.
@@ -60,9 +61,9 @@ decodable with Skeletal Nanite.
 The repository is installed through a Windows junction at Blender's user add-on
 directory. Enable **Hair Tool Unreal Bridge**, open Material Properties, and
 click **Set Up hair_sibuki_08 Materials**. Editing a displayed value updates the
-compatible preview group and persisted Unreal contract together. **Read Set
-System Color** refreshes the two exported colors on demand; Send to Unreal does
-the same refresh automatically.
+compatible preview group and persisted Unreal contract together. Send to Unreal
+reads evaluated `SystemColor.RGB` directly while preparing the disposable export
+mesh, so no material-level color copy or Alpha classification is required.
 
 Implementation-only sockets are hidden from Blender's recursive Surface UI.
 The compact **Hair Tool Unreal Bridge** UI uses native Blender 5.1 child panels
@@ -79,7 +80,7 @@ Tool node group definition is never edited.
 
 `unreal/build_haircards_master.py` rebuilds
 `/Game/Material/HairTool/Master/M_HT_HairCards` and updates the four instances
-under `/Game/Material/HairTool/MI`. Run it with the project's UE 5.7 Python
+under `/Game/Material/HairTool/MI`. Run it with the project's UE 5.8 Python
 commandlet and the CodexMaterialTools plugin, with Unreal Editor closed so asset
 packages cannot be overwritten by two processes.
 

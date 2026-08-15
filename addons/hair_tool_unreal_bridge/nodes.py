@@ -210,7 +210,6 @@ def _build_group(group, settings):
         "Factor",
         "AO Vertex",
         "AO Vertex Available",
-        "System Mask",
         "Depth Vertex",
     ):
         _new_socket(group, name, "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
@@ -317,42 +316,14 @@ def _build_group(group, settings):
         i["Depth Blend Mode"],
     )
 
-    centered = _math(group, "SUBTRACT", i["System Mask"], 0.5)
-    contrasted = _math(group, "MULTIPLY", centered, i["System Mask Contrast"])
-    recentered = _math(group, "ADD", contrasted, 0.5)
-    biased = _clamp01(group, _math(group, "ADD", recentered, i["System Mask Bias"]))
-    inverted = _math(group, "SUBTRACT", one, biased)
-    system_mask = _mix_float(group, i["System Mask Invert"], biased, inverted)
-    # Hair Tool's Set System Color deformer writes full RGBA values. At the
-    # default mask settings Blender uses its RGB directly, so painting remains
-    # live. If the bridge mask controls are changed, switch to the same two-
-    # parameter reconstruction used by Unreal.
-    selected_system_color = _blend(
-        group,
-        "HTUE Select System Color",
-        i["System Color 01"],
-        i["System Color 02"],
-        system_mask,
-        0.0,
-    )
-    contrast_delta = _math(group, "SUBTRACT", i["System Mask Contrast"], 1.0)
-    contrast_delta = _math(group, "ABSOLUTE", contrast_delta)
-    bias_delta = _math(group, "ABSOLUTE", i["System Mask Bias"])
-    mask_control = _math(group, "ADD", contrast_delta, bias_delta)
-    mask_control = _clamp01(group, _math(group, "ADD", mask_control, i["System Mask Invert"]))
-    system_color = _blend(
-        group,
-        "HTUE Apply System Mask Controls",
-        i["System Attribute Color"],
-        selected_system_color,
-        mask_control,
-        0.0,
-    )
+    # Hair Tool's Deformer SystemColor.RGB is the source of truth in both
+    # renderers. Send to Unreal transports the same linear RGB through UV1/UV3;
+    # Alpha is deliberately ignored by contract v3.
     color = _blend(
         group,
         "HTUE Stage System",
         color,
-        system_color,
+        i["System Attribute Color"],
         i["System Color Influence"],
         i["System Blend Mode"],
     )
@@ -418,9 +389,6 @@ def initialise_settings(material, shader):
     settings.roughness_minimum = _legacy_socket_value(
         shader, "SpecRoughness", settings.roughness_minimum
     )
-    system_colors = schema.SYSTEM_COLOR_INITIAL.get(material.name)
-    if system_colors:
-        settings.system_color_01, settings.system_color_02 = system_colors
     settings.system_color_influence = _legacy_socket_value(
         shader, "Debug  Color  Mix", settings.system_color_influence
     )
@@ -556,7 +524,6 @@ def _ensure_clone_input(group, name, socket_type):
 def _install_stack_in_clone(clone, stack_group):
     """Replace only the legacy color result inside a per-material group copy."""
     for name, socket_type in (
-        ("HTUE System Mask", "NodeSocketFloat"),
         ("HTUE IRD Map", "NodeSocketColor"),
         ("HTUE ORM Map", "NodeSocketColor"),
     ):
@@ -596,7 +563,6 @@ def _install_stack_in_clone(clone, stack_group):
     for source_name, target_name in native_links.items():
         _link_unique(clone, _group_input_output(clone, source_name), stack.inputs[target_name])
     for source_name, target_name in (
-        ("HTUE System Mask", "System Mask"),
         ("HTUE IRD Map", "IRD Map"),
         ("HTUE ORM Map", "ORM Map"),
     ):
@@ -687,7 +653,6 @@ def setup_material(material):
     _save_legacy_state(material, shader)
     from . import deformer_sync
 
-    deformer_sync.sync_system_colors(material)
     ao_vertex_available = deformer_sync.has_ao_source(material)
 
     tree = material.node_tree
@@ -730,12 +695,6 @@ def setup_material(material):
     _link_unique(tree, uv.outputs["UV"], ird.inputs["Vector"])
     _link_unique(tree, uv.outputs["UV"], orm.inputs["Vector"])
     _ensure_hair_attribute_links(material, shader)
-    system_attribute = _find_attribute_node(tree, "SystemColor") or tree.nodes.get("HTUE SystemColor")
-    if system_attribute is None:
-        system_attribute = _top_node(tree, "ShaderNodeAttribute", "HTUE SystemColor")
-        system_attribute.attribute_name = "SystemColor"
-
-    _link_unique(tree, system_attribute.outputs["Alpha"], shader.inputs["HTUE System Mask"])
     _link_unique(tree, ird.outputs["Color"], shader.inputs["HTUE IRD Map"])
     _link_unique(tree, orm.outputs["Color"], shader.inputs["HTUE ORM Map"])
 

@@ -29,7 +29,7 @@ for material_name in schema.TARGET_TEXTURE_SETS:
         name: [f"{link.from_node.name}.{link.from_socket.name}" for link in shader.inputs[name].links]
         for name in tracked_inputs
     }
-    data, deformer = contract.refresh_material_contract(material)
+    data, transport = contract.refresh_material_contract(material)
     results[material_name] = {
         "existing_links_preserved": all(
             not before[name] or before[name] == after[name]
@@ -52,11 +52,15 @@ for material_name in schema.TARGET_TEXTURE_SETS:
             )
         },
         "contract_errors": schema.validate_contract(data),
-        "deformer": deformer,
+        "contract_version": data["version"],
+        "system_color_alpha_socket_removed": shader.inputs.get("HTUE System Mask") is None,
+        "system_color_transport": transport,
     }
 
 assert all(item["existing_links_preserved"] for item in results.values())
 assert all(item["attribute_inputs_connected"] for item in results.values())
 assert all(not item["contract_errors"] for item in results.values())
 assert all(item["legacy_color_result_replaced"] for item in results.values())
+assert all(item["contract_version"] == 3 for item in results.values())
+assert all(item["system_color_alpha_socket_removed"] for item in results.values())
 print("HTUE_ACTUAL_BLEND_READONLY=" + json.dumps(results, sort_keys=True))

@@ -34,11 +34,12 @@ BLEND_FUNCTION = "/Game/CC_Shaders/HairShader/Source/Functions/blendFunc"
 UPDATE_TEXTURE_SETTINGS = bool(globals().get("CODEX_UPDATE_TEXTURE_SETTINGS", True))
 UPDATE_INSTANCES = bool(globals().get("CODEX_UPDATE_INSTANCES", True))
 
+SYSTEM_COLOR_UV_INDEX = 1
 RFAOS_UV_RG_INDEX = 2
 RFAOS_UV_BA_INDEX = 3
-RFAOS_UV_TAG = 4.0
-RFAOS_UV_TAG_LOWER = 3.99
-RFAOS_UV_TAG_UPPER = 5.01
+RFAOS_UV_TAG = 6.0
+RFAOS_UV_TAG_LOWER = 5.99
+RFAOS_UV_TAG_UPPER = 7.01
 
 # Material Instance groups mirror the Blender panel order. Synced controls are
 # deliberately separated from values that remain Unreal-only.
@@ -57,17 +58,9 @@ GROUP_UNREAL_OPACITY = "92 | UNREAL ONLY - Opacity"
 INSTANCE_PRESERVED_SCALAR_PARAMETERS = {
     "System Color Mix",
     "System Color Multiply",
-    "System Mask Invert",
     "Roughness Multiplier",
-    # Current master names retained for compatibility with existing handoffs.
-    "System Color Influence",
-    "System Mask Contrast",
-    "System Mask Bias",
 }
-INSTANCE_PRESERVED_VECTOR_PARAMETERS = {
-    "System Color 01",
-    "System Color 02",
-}
+INSTANCE_PRESERVED_VECTOR_PARAMETERS = set()
 
 EAL = unreal.EditorAssetLibrary
 MEL = unreal.MaterialEditingLibrary
@@ -422,10 +415,11 @@ def build_master(material):
 
     comment(
         material,
-        "RFAOS NANITE-SAFE PAYLOAD\n"
-        "UV2 HairTool_RFAOS_RG = (4+PackUNorm8(Random,Depth), Factor) | "
-        "UV3 HairTool_RFAOS_BA = (4+AO, SystemMask)\n"
-        "UV payload is used only when both tagged U values are in 3.99..5.01; "
+        "HTUE RGB NANITE-SAFE PAYLOAD V3\n"
+        "UV1 HairTool_SystemColor_RG = SystemColor.RG | "
+        "UV2 HairTool_RFAOS_RG = (6+PackUNorm8(Random,Depth), Factor) | "
+        "UV3 HairTool_AO_SystemB = (6+AO, SystemColor.B)\n"
+        "UV payload is used only when both tagged U values are in 5.99..7.01; "
         "otherwise VertexColor RGBA is preserved.",
         -4700,
         -2020,
@@ -433,6 +427,13 @@ def build_master(material):
         980,
     )
     vertex = make(material, "MaterialExpressionVertexColor", -4540, -1740)
+    system_rg = texcoord(
+        material,
+        SYSTEM_COLOR_UV_INDEX,
+        -4540,
+        -1700,
+        "HairTool_SystemColor_RG (UV1): linear SystemColor.RG",
+    )
     uv_rg = texcoord(
         material,
         RFAOS_UV_RG_INDEX,
@@ -445,8 +446,10 @@ def build_master(material):
         RFAOS_UV_BA_INDEX,
         -4540,
         -1320,
-        "HairTool_RFAOS_BA (UV3): U=tag+AO, V=SystemMask",
+        "HairTool_AO_SystemB (UV3): U=tag+AO, V=linear SystemColor.B",
     )
+    system_rg_r = component_mask(material, system_rg, "R", -4300, -1760)
+    system_rg_g = component_mask(material, system_rg, "G", -4300, -1670)
     uv_rg_u = component_mask(material, uv_rg, "R", -4300, -1580)
     uv_rg_v = component_mask(material, uv_rg, "G", -4300, -1490)
     uv_ba_u = component_mask(material, uv_ba, "R", -4300, -1350)
@@ -560,7 +563,21 @@ def build_master(material):
         -3880,
         -1350,
     )
-    uv_system_value = unary(
+    uv_system_r = unary(
+        material,
+        "MaterialExpressionSaturate",
+        system_rg_r,
+        -4080,
+        -1740,
+    )
+    uv_system_g = unary(
+        material,
+        "MaterialExpressionSaturate",
+        system_rg_g,
+        -4080,
+        -1650,
+    )
+    uv_system_b = unary(
         material,
         "MaterialExpressionSaturate",
         uv_ba_v,
@@ -622,15 +639,8 @@ def build_master(material):
         -3640,
         -1320,
     )
-    rfaos_system = tagged_uv_or_vertex(
-        material,
-        uv_system_value,
-        vertex,
-        "A",
-        payload_gate,
-        -3640,
-        -1160,
-    )
+    system_rg_value = append(material, uv_system_r, uv_system_g, -3640, -1740)
+    system_color_rgb = append(material, system_rg_value, uv_system_b, -3420, -1740)
     rfaos_depth = lerp(
         material,
         payload_zero,
@@ -708,24 +718,26 @@ def build_master(material):
     depth_mask = binary(material, "MaterialExpressionMultiply", depth_driver, depth_influence, 40, -420)
     depth_result = blend_stage(material, id_result, depth_tint, depth_mask, depth_blend_mode, 240, -500)
 
-    comment(material, "03 | SYSTEM COLOR\nRFAOS.A selects System Color 01/02; both colors and the blend mode are authored in Blender.", 500, -1900, 1650, 980)
-    system_01 = vector(material, "System Color 01", (0.0, 0.0, 0.0, 1), GROUP_SYNC_SYSTEM, 0, 680, -1680, "Color used when RFAOS.A is 0")
-    system_02 = vector(material, "System Color 02", (1.0, 1.0, 1.0, 1), GROUP_SYNC_SYSTEM, 1, 680, -1480, "Color used when RFAOS.A is 1")
-    system_influence = scalar(material, "System Color Influence", 0.0, GROUP_SYNC_SYSTEM, 2, 680, -1280, "Global strength of the selected System Color; 0 disables the System stage")
-    system_contrast = scalar(material, "System Mask Contrast", 1.0, GROUP_SYNC_SYSTEM, 3, 680, -1080, "Contrast around the RFAOS.A midpoint")
-    system_bias = scalar(material, "System Mask Bias", 0.0, GROUP_SYNC_SYSTEM, 4, 880, -1080, "Bias added to the RFAOS.A mask")
-    system_invert = scalar(material, "System Mask Invert", 0.0, GROUP_SYNC_SYSTEM, 5, 1080, -1080, "0 normal, 1 inverted")
-    system_blend_mode = scalar(material, "System Blend Mode", 4.0, GROUP_SYNC_SYSTEM, 6, 1280, -1080, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
-    half = constant(material, 0.5, 300, -850)
-    centered = binary(material, "MaterialExpressionSubtract", rfaos_system, half, 300, -1250)
-    contrasted = binary(material, "MaterialExpressionMultiply", centered, system_contrast, 520, -1250)
-    recentered = binary(material, "MaterialExpressionAdd", contrasted, half, 740, -1250)
-    biased = binary(material, "MaterialExpressionAdd", recentered, system_bias, 950, -1250)
-    system_mask = unary(material, "MaterialExpressionSaturate", biased, 1160, -1250)
-    inverted_mask = unary(material, "MaterialExpressionOneMinus", system_mask, 1160, -1080)
-    selected_mask = lerp(material, system_mask, inverted_mask, system_invert, 1380, -1200)
-    two_system_colors = lerp(material, system_01, system_02, selected_mask, 1380, -1500)
-    system_color_result = blend_stage(material, depth_result, two_system_colors, system_influence, system_blend_mode, 1700, -1100)
+    comment(material, "07 | SYSTEM COLOR RGB\nEvaluated Hair Tool SystemColor.RGB is transported directly through UV1.RG + UV3.G. Alpha is ignored.", 500, -1900, 1650, 980)
+    system_influence = scalar(material, "System Color Influence", 1.0, GROUP_SYNC_SYSTEM, 0, 680, -1480, "Strength of evaluated Hair Tool SystemColor.RGB; 0 disables the System stage")
+    system_blend_mode = scalar(material, "System Blend Mode", 4.0, GROUP_SYNC_SYSTEM, 1, 880, -1480, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
+    system_payload_influence = binary(
+        material,
+        "MaterialExpressionMultiply",
+        system_influence,
+        payload_gate,
+        1120,
+        -1380,
+    )
+    system_color_result = blend_stage(
+        material,
+        depth_result,
+        system_color_rgb,
+        system_payload_influence,
+        system_blend_mode,
+        1500,
+        -1180,
+    )
 
     comment(material, "05 | SURFACE + FLOW\nORM and RFAOS.B feed Hair BSDF surface values; Flow supplies tangent direction.", 1120, -700, 1850, 1250)
     ao_strength = scalar(material, "AO Strength", 1.0, GROUP_SYNC_AO, 0, 1320, -420, "Strength of the combined vertex and texture AO; 0 disables AO")
@@ -854,10 +866,9 @@ def create_instances(master):
             if texture:
                 MEL.set_material_instance_texture_parameter_value(mi, texture_entry["param"], texture)
         hair_tool = entry.get("hair_tool") or {}
-        # Legacy handoffs intentionally leave these controls under Unreal's
-        # ownership.  Contract v2 names every Blender-authoritative parameter
-        # in sync_parameters, including both System Colors, so those values
-        # are now applied instead of silently preserving stale MI overrides.
+        # Legacy handoffs intentionally leave some controls under Unreal's
+        # ownership. Contract v3 lists only Blender-authoritative parameters;
+        # SystemColor itself is per-vertex RGB and has no MI color override.
         sync_parameters = set(hair_tool.get("sync_parameters") or [])
         for param, value in (hair_tool.get("scalar_parameters") or {}).items():
             if param in INSTANCE_PRESERVED_SCALAR_PARAMETERS and param not in sync_parameters:
@@ -909,9 +920,9 @@ try:
     result["pixel_depth_offset"] = json.loads(pdo_json) if pdo_json else repr(pdo_raw)
     for prefix, width, height in (
         ("01 | TEXTURES + UV", 1900, 1650),
-        ("RFAOS NANITE-SAFE PAYLOAD", 1750, 980),
+        ("HTUE RGB NANITE-SAFE PAYLOAD V3", 1750, 980),
         ("02 + 04 | HAIR TOOL COLOR + ID ROOT DEPTH", 3050, 2050),
-        ("03 | SYSTEM COLOR", 1900, 980),
+        ("07 | SYSTEM COLOR RGB", 1900, 980),
         ("05 | SURFACE + FLOW", 1850, 1250),
         ("06 | OPACITY", 3450, 1650),
     ):
