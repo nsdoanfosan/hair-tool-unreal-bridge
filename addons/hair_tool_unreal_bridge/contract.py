@@ -14,10 +14,7 @@ def persist_material_contract(material):
 
 
 def refresh_material_contract(material):
-    """Pull live Hair Tool sockets before export reads the v3 material JSON."""
-    from . import nodes
-
-    nodes.pull_hair_tool_values(material)
+    """Persist bridge-owned controls; deformer data travels on evaluated geometry."""
     data = persist_material_contract(material)
     return data, {
         "transport": "evaluated SystemColor.RGB via UV1.RG + UV3.G",

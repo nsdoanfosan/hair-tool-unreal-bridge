@@ -28,24 +28,6 @@ MANAGED_TOP_LEVEL_NODES = (
     "HTUE UV",
 )
 
-HAIR_SOCKET_FIELDS = {
-    "base_color": "Base Color",
-    "root_color": "Root Color",
-    "root_mix": "Root Color Mix Factor",
-    "root_range": "Root Color Range",
-    "root_random_influence": "Root Texture Overaly",
-    "root_random_brightness": "Root  Texture Brightness",
-    "tip_color": "Tip Color",
-    "tip_mix": "Tip Color Mix Factor",
-    "tip_range": "Tip Color Range",
-    "tip_random_influence": "Tip Texture Overlay",
-    "tip_random_brightness": "Tip  Texture Brightness",
-    "depth_tint_color": "Depth Tint",
-    "depth_tint_influence": "Depth Mix Factor",
-    "ao_color_influence": "AO Mix Factor",
-    "roughness_minimum": "SpecRoughness",
-    "system_color_influence": "Debug  Color  Mix",
-}
 
 def find_hair_shader(material):
     if not material.use_nodes or material.node_tree is None:
@@ -211,6 +193,7 @@ def _build_group(group, settings):
         "AO Vertex",
         "AO Vertex Available",
         "Depth Vertex",
+        "System Attribute Available",
     ):
         _new_socket(group, name, "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
     _new_socket(
@@ -254,9 +237,48 @@ def _build_group(group, settings):
 
     eps = 0.001
     one = 1.0
+
+    # The bridge owns the color stack. Hair Tool contributes evaluated
+    # deformer attributes only; its legacy HairShaderMain blend result is not
+    # chained into this output. The order is deliberately identical to the
+    # Unreal master: Base -> System -> Root -> Tip -> ID -> Depth -> AO.
+    color = i["HT Base Color"]
+    system_influence = _math(
+        group,
+        "MULTIPLY",
+        i["System Color Influence"],
+        i["System Attribute Available"],
+        name="HTUE System Effective Influence",
+    )
+    color = _blend(
+        group,
+        "HTUE Stage System",
+        color,
+        i["System Attribute Color"],
+        system_influence,
+        i["System Blend Mode"],
+    )
+
+    # HairShaderMain's Map Range uses safe division. With From Min and From
+    # Max both zero, Root Range=0 resolves to To Min (1), not to a disabled
+    # mask. Preserve that behavior so Set Factor continues to match Hair Tool.
     root_delta = _math(group, "SUBTRACT", i["HT Root Range"], i["Factor"])
     root_safe = _math(group, "MAXIMUM", i["HT Root Range"], eps)
-    root_mask = _clamp01(group, _math(group, "DIVIDE", root_delta, root_safe))
+    root_ranged_mask = _clamp01(group, _math(group, "DIVIDE", root_delta, root_safe))
+    root_range_enabled = _math(
+        group,
+        "GREATER_THAN",
+        i["HT Root Range"],
+        0.0,
+        name="HTUE Root Range Enabled",
+    )
+    root_mask = _mix_float(
+        group,
+        root_range_enabled,
+        one,
+        root_ranged_mask,
+        name="HTUE Root Range Zero Is Full",
+    )
     root_random_value = _math(group, "ADD", i["Random"], i["HT Root Random Brightness"])
     root_random = _mix_float(group, i["HT Root Random Influence"], one, root_random_value)
     root_texture = _mix_float(group, i["Root Map Influence"], one, ird_g)
@@ -266,7 +288,7 @@ def _build_group(group, settings):
     color = _blend(
         group,
         "HTUE Stage Root",
-        i["HT Base Color"],
+        color,
         i["HT Root Color"],
         root_weight,
         i["Root Blend Mode"],
@@ -314,18 +336,6 @@ def _build_group(group, settings):
         i["Depth Tint Color"],
         depth_weight,
         i["Depth Blend Mode"],
-    )
-
-    # Hair Tool's Deformer SystemColor.RGB is the source of truth in both
-    # renderers. Send to Unreal transports the same linear RGB through UV1/UV3;
-    # Alpha is deliberately ignored by contract v3.
-    color = _blend(
-        group,
-        "HTUE Stage System",
-        color,
-        i["System Attribute Color"],
-        i["System Color Influence"],
-        i["System Blend Mode"],
     )
 
     ao_vertex_influence = _math(
@@ -385,7 +395,6 @@ def initialise_settings(material, shader):
     settings.depth_tint_influence = _legacy_socket_value(
         shader, "Depth Mix Factor", settings.depth_tint_influence
     )
-    settings.ao_color_influence = _legacy_socket_value(shader, "AO Mix Factor", 0.0)
     settings.roughness_minimum = _legacy_socket_value(
         shader, "SpecRoughness", settings.roughness_minimum
     )
@@ -538,29 +547,14 @@ def _install_stack_in_clone(clone, stack_group):
     stack.label = "HTUE synchronized color stack (legacy blend result replacement)"
     stack.node_tree = stack_group
 
-    native_links = {
-        "Base Color": "HT Base Color",
-        "Root Color": "HT Root Color",
-        "Root Color Mix Factor": "HT Root Mix",
-        "Root Color Range": "HT Root Range",
-        "Root Texture Overaly": "HT Root Random Influence",
-        "Root  Texture Brightness": "HT Root Random Brightness",
-        "Tip Color": "HT Tip Color",
-        "Tip Color Mix Factor": "HT Tip Mix",
-        "Tip Color Range": "HT Tip Range",
-        "Tip Texture Overlay": "HT Tip Random Influence",
-        "Tip  Texture Brightness": "HT Tip Random Brightness",
+    deformer_links = {
         "Random Id [Map]": "Random",
         "Factor [Map]": "Factor",
         "Depth [Map]": "Depth Vertex",
-        "Depth Tint": "Depth Tint Color",
-        "Depth Mix Factor": "Depth Tint Influence",
         "Vert Color AO [Map]": "AO Vertex",
         "Debug Color": "System Attribute Color",
-        "Debug  Color  Mix": "System Color Influence",
-        "AO Mix Factor": "AO Color Influence",
     }
-    for source_name, target_name in native_links.items():
+    for source_name, target_name in deformer_links.items():
         _link_unique(clone, _group_input_output(clone, source_name), stack.inputs[target_name])
     for source_name, target_name in (
         ("HTUE IRD Map", "IRD Map"),
@@ -653,7 +647,10 @@ def setup_material(material):
     _save_legacy_state(material, shader)
     from . import deformer_sync
 
-    ao_vertex_available = deformer_sync.has_ao_source(material)
+    ao_vertex_available = deformer_sync.has_evaluated_source_attribute(material, "AO")
+    system_attribute_available = deformer_sync.has_evaluated_source_attribute(
+        material, "SystemColor"
+    )
 
     tree = material.node_tree
     input_state = _capture_shader_inputs(material, tree, shader)
@@ -684,6 +681,9 @@ def setup_material(material):
     clone.name = f"{schema.SHADER_CLONE_PREFIX}::{material.name}"
     stack = _install_stack_in_clone(clone, stack_group)
     stack.inputs["AO Vertex Available"].default_value = float(ao_vertex_available)
+    stack.inputs["System Attribute Available"].default_value = float(
+        system_attribute_available
+    )
     shader.node_tree = clone
     _restore_shader_inputs(tree, shader, input_state)
 
@@ -723,36 +723,6 @@ def sync_material(material):
                 if field in schema.BLEND_FIELDS
                 else float(getattr(settings, field))
             )
-    for field, socket_name in HAIR_SOCKET_FIELDS.items():
-        socket = shader.inputs.get(socket_name)
-        if socket is not None:
-            socket.default_value = getattr(settings, field)
-
-
-def pull_hair_tool_values(material):
-    """Mirror the unchanged Hair Tool interface into the Unreal contract UI."""
-    shader = find_hair_shader(material)
-    settings = getattr(material, "htue_settings", None)
-    if shader is None or settings is None or not settings.initialized:
-        return False
-    captured = {}
-    for field, socket_name in HAIR_SOCKET_FIELDS.items():
-        socket = shader.inputs.get(socket_name)
-        if socket is not None:
-            captured[field] = _socket_value(socket)
-    changed = False
-    for field, value in captured.items():
-        current = getattr(settings, field)
-        if hasattr(current, "__len__") and not isinstance(current, str):
-            differs = any(abs(float(a) - float(b)) > 1.0e-6 for a, b in zip(current, value))
-        else:
-            differs = abs(float(current) - float(value)) > 1.0e-6
-        if differs:
-            setattr(settings, field, value)
-            changed = True
-    return changed
-
-
 def restore_material(material):
     tree = material.node_tree
     if tree is None:

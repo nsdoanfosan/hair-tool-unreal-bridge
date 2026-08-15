@@ -73,11 +73,11 @@ class TestUnrealBuilderContract(unittest.TestCase):
         expected_groups = (
             "01 | HTUE SYNC - Textures",
             "02 | HTUE SYNC - Base",
-            "03 | HTUE SYNC - Root",
-            "04 | HTUE SYNC - Tip",
-            "05 | HTUE SYNC - ID",
-            "06 | HTUE SYNC - Depth",
-            "07 | HTUE SYNC - System Color",
+            "03 | HTUE SYNC - System Color",
+            "04 | HTUE SYNC - Root",
+            "05 | HTUE SYNC - Tip",
+            "06 | HTUE SYNC - ID",
+            "07 | HTUE SYNC - Depth",
             "08 | HTUE SYNC - AO & Roughness",
             "90 | UNREAL ONLY - UV",
             "91 | UNREAL ONLY - Surface & Flow",
@@ -85,6 +85,22 @@ class TestUnrealBuilderContract(unittest.TestCase):
         )
         for group in expected_groups:
             self.assertIn(group, self.source)
+
+    def test_unreal_color_stack_matches_blender_layer_order(self):
+        order = (
+            "system_color_result = blend_stage",
+            "root_result = blend_stage",
+            "hair_tool_color = blend_stage",
+            "id_result = blend_stage",
+            "depth_result = blend_stage",
+            "final_color = blend_stage",
+        )
+        positions = [self.source.index(token) for token in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn(
+            "root_saturate = lerp(material, one, root_saturate, root_range_enabled",
+            self.source,
+        )
 
 
 if __name__ == "__main__":

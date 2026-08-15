@@ -80,6 +80,21 @@ class TestHairToolUnrealBridgeSchema(unittest.TestCase):
             {"Flow Map", "IRD Map", "ORM Map", "Opacity Map"},
         )
 
+    def test_layer_order_and_ownership_are_explicit(self):
+        hair = schema.build_contract("M_HT_Default_Material_01", settings())["hair_tool"]
+        self.assertEqual(
+            hair["layer_order"],
+            ["Base", "System", "Root", "Tip", "ID", "Depth", "AO"],
+        )
+        self.assertEqual(
+            hair["source_ownership"]["hair_tool"],
+            "evaluated deformer attributes only",
+        )
+        self.assertEqual(
+            hair["source_ownership"]["legacy_hair_shader_blending"],
+            "ignored",
+        )
+
     def test_contract_validates_and_roundtrips(self):
         original = schema.build_contract("M_HT_Default_Material_01", settings())
         encoded = schema.dumps_contract("M_HT_Default_Material_01", settings())

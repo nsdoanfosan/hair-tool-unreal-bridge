@@ -145,6 +145,12 @@ def build_contract(material_name, settings):
         "hair_tool": {
             "contract_version": CONTRACT_VERSION,
             "control_source_material": material_name,
+            "layer_order": ["Base", "System", "Root", "Tip", "ID", "Depth", "AO"],
+            "source_ownership": {
+                "hair_tool": "evaluated deformer attributes only",
+                "bridge": "colors, strengths and blend modes",
+                "legacy_hair_shader_blending": "ignored",
+            },
             "blend_mode_legend": {
                 "0": "Normal",
                 "1": "Multiply",

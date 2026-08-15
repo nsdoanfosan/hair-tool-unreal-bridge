@@ -95,6 +95,17 @@ assert shader.inputs["Vert Color AO [Map]"].links[0].from_node == ao
 assert shader.inputs["Root Color Mix Factor"].default_value == 1.0
 assert not shader.inputs["Root Color Mix Factor"].is_linked
 assert stack.inputs["System Attribute Color"].links[0].from_node.bl_idname == "NodeGroupInput"
+for bridge_owned_input in (
+    "HT Base Color",
+    "HT Root Color",
+    "HT Root Mix",
+    "HT Tip Color",
+    "HT Tip Mix",
+    "Depth Tint Influence",
+    "System Color Influence",
+    "AO Color Influence",
+):
+    assert not stack.inputs[bridge_owned_input].is_linked, bridge_owned_input
 assert shader.node_tree.nodes["Hair Tool Final Color"].inputs[0].links[0].from_node == stack
 assert shader.inputs.get("HTUE System Mask") is None
 assert material.htue_settings.initialized
@@ -108,11 +119,29 @@ assert stack.inputs["Root Blend Mode"].default_value == 2.0
 saved = schema.loads_contract(material[schema.CONTRACT_PROPERTY])
 assert saved["hair_tool"]["scalar_parameters"]["Root Blend Mode"] == 2.0
 
-# A direct Hair Tool input edit is pulled into the shared contract without
-# disabling the original socket or its deformer links.
+# Legacy HairShaderMain material controls are intentionally not pulled into the
+# bridge contract. Deformer attribute links remain live independently.
+bridge_root_mix = material.htue_settings.root_mix
 shader.inputs["Root Color Mix Factor"].default_value = 0.35
-assert nodes.pull_hair_tool_values(material)
-assert abs(material.htue_settings.root_mix - 0.35) < 1.0e-6
+contract.refresh_material_contract(material)
+assert abs(material.htue_settings.root_mix - bridge_root_mix) < 1.0e-6
+assert abs(stack.inputs["HT Root Mix"].default_value - bridge_root_mix) < 1.0e-6
+
+# Bridge edits update only the replacement stack, never the legacy shader UI.
+material.htue_settings.root_mix = 0.65
+assert abs(stack.inputs["HT Root Mix"].default_value - 0.65) < 1.0e-6
+assert abs(shader.inputs["Root Color Mix Factor"].default_value - 0.35) < 1.0e-6
+
+# Root Range=0 must use Hair Tool's safe-Map-Range fallback of one.
+root_zero = stack.node_tree.nodes["HTUE Root Range Zero Is Full"]
+assert root_zero.bl_idname == "ShaderNodeMix"
+
+# The replacement stack is ordered Base > System > Root > Tip > ID > Depth > AO.
+assert stack.node_tree.nodes["HTUE Stage Root Base"].inputs[0].links[0].from_node.name == "HTUE Stage System"
+assert stack.node_tree.nodes["HTUE Stage Tip Base"].inputs[0].links[0].from_node.name == "HTUE Stage Root"
+assert stack.node_tree.nodes["HTUE Stage ID Base"].inputs[0].links[0].from_node.name == "HTUE Stage Tip"
+assert stack.node_tree.nodes["HTUE Stage Depth Base"].inputs[0].links[0].from_node.name == "HTUE Stage ID"
+assert stack.node_tree.nodes["HTUE Stage AO Base"].inputs[0].links[0].from_node.name == "HTUE Stage Depth"
 
 # Re-running setup is the load migration path and must keep native links.
 addon.migrate_bridge_ui_on_load(None)

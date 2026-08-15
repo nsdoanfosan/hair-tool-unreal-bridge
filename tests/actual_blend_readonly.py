@@ -41,6 +41,18 @@ for material_name in schema.TARGET_TEXTURE_SETS:
         "after": after,
         "clone": shader.node_tree.name,
         "legacy_color_result_replaced": bool(stack.get("htue_replaces_legacy_color_blends")),
+        "legacy_material_blends_disconnected": all(
+            not stack.inputs[name].is_linked
+            for name in (
+                "HT Base Color",
+                "HT Root Color",
+                "HT Root Mix",
+                "HT Tip Color",
+                "HT Tip Mix",
+                "System Color Influence",
+                "AO Color Influence",
+            )
+        ),
         "native_mix_values": {
             name: float(shader.inputs[name].default_value)
             for name in (
@@ -61,6 +73,7 @@ assert all(item["existing_links_preserved"] for item in results.values())
 assert all(item["attribute_inputs_connected"] for item in results.values())
 assert all(not item["contract_errors"] for item in results.values())
 assert all(item["legacy_color_result_replaced"] for item in results.values())
+assert all(item["legacy_material_blends_disconnected"] for item in results.values())
 assert all(item["contract_version"] == 3 for item in results.values())
 assert all(item["system_color_alpha_socket_removed"] for item in results.values())
 print("HTUE_ACTUAL_BLEND_READONLY=" + json.dumps(results, sort_keys=True))

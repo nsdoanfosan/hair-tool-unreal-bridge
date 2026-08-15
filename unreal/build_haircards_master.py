@@ -45,11 +45,11 @@ RFAOS_UV_TAG_UPPER = 7.01
 # deliberately separated from values that remain Unreal-only.
 GROUP_SYNC_TEXTURES = "01 | HTUE SYNC - Textures"
 GROUP_SYNC_BASE = "02 | HTUE SYNC - Base"
-GROUP_SYNC_ROOT = "03 | HTUE SYNC - Root"
-GROUP_SYNC_TIP = "04 | HTUE SYNC - Tip"
-GROUP_SYNC_ID = "05 | HTUE SYNC - ID"
-GROUP_SYNC_DEPTH = "06 | HTUE SYNC - Depth"
-GROUP_SYNC_SYSTEM = "07 | HTUE SYNC - System Color"
+GROUP_SYNC_SYSTEM = "03 | HTUE SYNC - System Color"
+GROUP_SYNC_ROOT = "04 | HTUE SYNC - Root"
+GROUP_SYNC_TIP = "05 | HTUE SYNC - Tip"
+GROUP_SYNC_ID = "06 | HTUE SYNC - ID"
+GROUP_SYNC_DEPTH = "07 | HTUE SYNC - Depth"
 GROUP_SYNC_AO = "08 | HTUE SYNC - AO & Roughness"
 GROUP_UNREAL_UV = "90 | UNREAL ONLY - UV"
 GROUP_UNREAL_SURFACE = "91 | UNREAL ONLY - Surface & Flow"
@@ -652,8 +652,29 @@ def build_master(material):
     id_map_influence = scalar(material, "ID Map Influence", 0.0, GROUP_SYNC_ID, 0, -4080, -1320, "0 matches Blender's exported Random attribute; 1 opts into the IRD.R ID map")
     id_driver = lerp(material, rfaos_random, ird, id_map_influence, -3400, -1460, "", "R")
 
-    base_color = vector(material, "HT Base Color", (0.02, 0.02, 0.02, 1), GROUP_SYNC_BASE, 0, -3160, -1740, "Blender HairShaderMain Base Color")
-    comment(material, "02 + 04 | HAIR TOOL COLOR + ID ROOT DEPTH\nRFAOS.G Factor drives Base/Root/Tip; IRD supplies ID, Root and Depth masks.", -3300, -1940, 3050, 2050)
+    base_color = vector(material, "HT Base Color", (0.02, 0.02, 0.02, 1), GROUP_SYNC_BASE, 0, -3160, -1740, "Bridge-owned base color")
+    comment(material, "02-07 | ORDERED COLOR STACK\nBase > System > Root > Tip > ID > Depth. Hair Tool deformers supply attributes; legacy HairShaderMain blending is not reused.", -3300, -1940, 4050, 2050)
+
+    system_influence = scalar(material, "System Color Influence", 1.0, GROUP_SYNC_SYSTEM, 0, -3160, -1660, "Strength of evaluated Hair Tool SystemColor.RGB; 0 disables the System stage")
+    system_blend_mode = scalar(material, "System Blend Mode", 4.0, GROUP_SYNC_SYSTEM, 1, -2960, -1660, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
+    system_payload_influence = binary(
+        material,
+        "MaterialExpressionMultiply",
+        system_influence,
+        payload_gate,
+        -2700,
+        -1620,
+    )
+    system_color_result = blend_stage(
+        material,
+        base_color,
+        system_color_rgb,
+        system_payload_influence,
+        system_blend_mode,
+        -2440,
+        -1740,
+    )
+
     root_color = vector(material, "HT Root Color", (0.299, 0.115, 0.037, 1), GROUP_SYNC_ROOT, 0, -3160, -1540, "Blender HairShaderMain Root Color")
     tip_color = vector(material, "HT Tip Color", (0.784, 0.499, 0.303, 1), GROUP_SYNC_TIP, 0, -3160, -1340, "Blender HairShaderMain Tip Color")
     root_mix = scalar(material, "HT Root Mix", 1.0, GROUP_SYNC_ROOT, 1, -3160, -1120, "Root color blend strength; 0 disables the Root stage")
@@ -675,7 +696,9 @@ def build_master(material):
     root_ratio = binary(material, "MaterialExpressionDivide", rfaos_factor, root_range_safe, -2120, -1240)
     root_inverse = unary(material, "MaterialExpressionOneMinus", root_ratio, -1920, -1240)
     root_saturate = unary(material, "MaterialExpressionSaturate", root_inverse, -1730, -1240)
-    root_saturate = binary(material, "MaterialExpressionMultiply", root_saturate, root_range_enabled, -1510, -1370)
+    # HairShaderMain Map Range performs safe division. Root Range=0 therefore
+    # resolves to its To Min value (1), rather than disabling the root layer.
+    root_saturate = lerp(material, one, root_saturate, root_range_enabled, -1510, -1370)
     root_id_add = binary(material, "MaterialExpressionAdd", id_driver, root_brightness, -2320, -930)
     root_extent = lerp(material, one, root_id_add, root_random, -2070, -930)
     root_weight = binary(material, "MaterialExpressionMultiply", root_saturate, root_extent, -1320, -1180)
@@ -684,7 +707,7 @@ def build_master(material):
     root_map = lerp(material, one, ird, root_map_influence, -1460, -900, "", "G")
     root_weight = binary(material, "MaterialExpressionMultiply", root_weight, root_map, -900, -1120)
     root_weight = unary(material, "MaterialExpressionSaturate", root_weight, -700, -1120)
-    root_result = blend_stage(material, base_color, root_color, root_weight, root_blend_mode, -820, -1500)
+    root_result = blend_stage(material, system_color_result, root_color, root_weight, root_blend_mode, -820, -1500)
 
     tip_range_enabled = positive_gate(material, tip_range, zero, one, -2320, -810)
     tip_start = binary(material, "MaterialExpressionSubtract", one, tip_range, -2320, -680)
@@ -718,27 +741,6 @@ def build_master(material):
     depth_mask = binary(material, "MaterialExpressionMultiply", depth_driver, depth_influence, 40, -420)
     depth_result = blend_stage(material, id_result, depth_tint, depth_mask, depth_blend_mode, 240, -500)
 
-    comment(material, "07 | SYSTEM COLOR RGB\nEvaluated Hair Tool SystemColor.RGB is transported directly through UV1.RG + UV3.G. Alpha is ignored.", 500, -1900, 1650, 980)
-    system_influence = scalar(material, "System Color Influence", 1.0, GROUP_SYNC_SYSTEM, 0, 680, -1480, "Strength of evaluated Hair Tool SystemColor.RGB; 0 disables the System stage")
-    system_blend_mode = scalar(material, "System Blend Mode", 4.0, GROUP_SYNC_SYSTEM, 1, 880, -1480, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
-    system_payload_influence = binary(
-        material,
-        "MaterialExpressionMultiply",
-        system_influence,
-        payload_gate,
-        1120,
-        -1380,
-    )
-    system_color_result = blend_stage(
-        material,
-        depth_result,
-        system_color_rgb,
-        system_payload_influence,
-        system_blend_mode,
-        1500,
-        -1180,
-    )
-
     comment(material, "05 | SURFACE + FLOW\nORM and RFAOS.B feed Hair BSDF surface values; Flow supplies tangent direction.", 1120, -700, 1850, 1250)
     ao_strength = scalar(material, "AO Strength", 1.0, GROUP_SYNC_AO, 0, 1320, -420, "Strength of the combined vertex and texture AO; 0 disables AO")
     ao_vertex_influence = scalar(material, "AO Vertex Influence", 1.0, GROUP_SYNC_AO, 1, 1320, -300, "Strength of RFAOS.B vertex AO")
@@ -754,7 +756,7 @@ def build_master(material):
     # Overlay/SoftLight HLSL with invalid .g/.b swizzles.
     ao_rg = append(material, ao_result, ao_result, 1960, -520)
     ao_rgb = append(material, ao_rg, ao_result, 2140, -520)
-    final_color = blend_stage(material, system_color_result, ao_rgb, ao_color_influence, ao_blend_mode, 2320, -920)
+    final_color = blend_stage(material, depth_result, ao_rgb, ao_color_influence, ao_blend_mode, 2320, -920)
     rough_mult = scalar(material, "Roughness Multiplier", 1.0, GROUP_UNREAL_SURFACE, 0, 1320, 180, "Multiplies ORM.G roughness")
     rough_min = scalar(material, "Roughness Minimum", 0.08, GROUP_SYNC_AO, 5, 1520, -100, "Minimum roughness from Blender SpecRoughness")
     rough_scaled = binary(material, "MaterialExpressionMultiply", orm, rough_mult, 1760, -80, "G")
@@ -921,8 +923,7 @@ try:
     for prefix, width, height in (
         ("01 | TEXTURES + UV", 1900, 1650),
         ("HTUE RGB NANITE-SAFE PAYLOAD V3", 1750, 980),
-        ("02 + 04 | HAIR TOOL COLOR + ID ROOT DEPTH", 3050, 2050),
-        ("07 | SYSTEM COLOR RGB", 1900, 980),
+        ("02-07 | ORDERED COLOR STACK", 4050, 2050),
         ("05 | SURFACE + FLOW", 1850, 1250),
         ("06 | OPACITY", 3450, 1650),
     ):
