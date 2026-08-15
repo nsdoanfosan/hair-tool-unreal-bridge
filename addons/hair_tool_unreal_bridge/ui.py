@@ -49,7 +49,7 @@ class HTUE_PT_MaterialBridge(_HTUEPanel, bpy.types.Panel):
         status = layout.box()
         status.label(text="Hair Tool inputs stay active", icon="LINKED")
         status.label(text="Only duplicate legacy color blending is replaced")
-        status.label(text="Unreal contract v2  |  36 synchronized parameters")
+        status.label(text="Unreal contract v3  |  31 synchronized parameters")
         row = layout.row(align=True)
         row.operator("htue.refresh_contract", text="Sync Hair Tool + Unreal", icon="FILE_REFRESH")
         row.operator("htue.restore_active_material", text="Restore", icon="LOOP_BACK")
@@ -140,13 +140,10 @@ class HTUE_PT_System(_HTUEPanel, bpy.types.Panel):
         layout = _settings_layout(self.layout)
         settings = context.material.htue_settings
         info = layout.box()
-        info.label(text="RGB: Hair Tool SystemColor (live)", icon="COLOR")
-        info.label(text="Alpha: 0 = Color 01, 1 = Color 02")
-        layout.operator("htue.pull_deformer_colors", text="Read Set System Color", icon="IMPORT")
+        info.label(text="Source: Hair Tool SystemColor.RGB", icon="COLOR")
+        info.label(text="Unreal: UV1.RG + UV3.G  |  Alpha ignored")
         _properties(layout, settings, (
-            "system_color_01", "system_color_02", "system_color_influence",
-            "system_mask_contrast", "system_mask_bias", "system_mask_invert",
-            "system_blend_mode",
+            "system_color_influence", "system_blend_mode",
         ))
 
 

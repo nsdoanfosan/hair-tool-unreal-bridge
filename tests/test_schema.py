@@ -55,13 +55,19 @@ class TestHairToolUnrealBridgeSchema(unittest.TestCase):
         ):
             self.assertEqual(scalars[parameter], 2.0)
 
-    def test_system_colors_are_blender_synced_parameters(self):
+    def test_system_color_is_per_vertex_rgb_not_alpha_selected_parameters(self):
         data = schema.build_contract("M_HT_Default_Material_01", settings())
         hair = data["hair_tool"]
-        self.assertIn("System Color 01", hair["vector_parameters"])
-        self.assertIn("System Color 02", hair["vector_parameters"])
-        self.assertIn("System Color 01", hair["sync_parameters"])
-        self.assertIn("System Color 02", hair["sync_parameters"])
+        self.assertNotIn("System Color 01", hair["vector_parameters"])
+        self.assertNotIn("System Color 02", hair["vector_parameters"])
+        self.assertNotIn("System Mask Contrast", hair["scalar_parameters"])
+        self.assertFalse(hair["vertex_uv_payload"]["system_color_alpha_used"])
+        self.assertEqual(
+            hair["vertex_uv_payload"]["system_color_source"],
+            "evaluated SystemColor.RGB",
+        )
+        self.assertIn("SystemColor.RG", hair["vertex_uv_payload"]["UV1.RG"])
+        self.assertIn("SystemColor.B", hair["vertex_uv_payload"]["UV3.G"])
 
     def test_vertex_and_texture_sources_are_both_declared(self):
         data = schema.build_contract("M_HT_Default_Material_01", settings())

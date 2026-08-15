@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Hair Tool Unreal Bridge",
     "author": "PARK / OpenAI Codex",
-    "version": (0, 3, 0),
+    "version": (0, 4, 0),
     "blender": (5, 1, 0),
     "location": "Material Properties > Hair Tool Unreal Bridge",
-    "description": "Synchronize Hair Tool color layers, masks, blend modes and textures with Unreal",
+    "description": "Synchronize Hair Tool RGB color layers, blend modes and textures with Unreal",
     "category": "Material",
 }
 

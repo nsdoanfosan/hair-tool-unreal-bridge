@@ -14,13 +14,16 @@ def persist_material_contract(material):
 
 
 def refresh_material_contract(material):
-    """Pull live Hair Tool sockets and Deformer colors before export reads JSON."""
-    from . import deformer_sync, nodes
+    """Pull live Hair Tool sockets before export reads the v3 material JSON."""
+    from . import nodes
 
     nodes.pull_hair_tool_values(material)
-    deformer_result = deformer_sync.sync_system_colors(material)
     data = persist_material_contract(material)
-    return data, deformer_result
+    return data, {
+        "transport": "evaluated SystemColor.RGB via UV1.RG + UV3.G",
+        "system_color_alpha_used": False,
+        "deferred_to_mesh_export": True,
+    }
 
 
 def material_contract(material):

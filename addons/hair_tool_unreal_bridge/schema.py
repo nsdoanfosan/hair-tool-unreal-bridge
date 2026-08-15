@@ -2,8 +2,8 @@ import json
 from pathlib import Path
 
 
-CONTRACT_VERSION = 2
-CONTRACT_SCHEMA = "htue.material.v2"
+CONTRACT_VERSION = 3
+CONTRACT_SCHEMA = "htue.material.v3"
 CONTRACT_PROPERTY = "htue_contract_json"
 LEGACY_STATE_PROPERTY = "htue_legacy_state_json"
 BRIDGE_NODE_NAME = "HTUE Hair Material Bridge"
@@ -53,8 +53,6 @@ VECTOR_FIELDS = {
     "tip_color": "HT Tip Color",
     "id_tint_color": "ID Tint Color",
     "depth_tint_color": "Depth Tint Color",
-    "system_color_01": "System Color 01",
-    "system_color_02": "System Color 02",
 }
 
 SCALAR_FIELDS = {
@@ -77,9 +75,6 @@ SCALAR_FIELDS = {
     "depth_tint_influence": "Depth Tint Influence",
     "depth_blend_mode": "Depth Blend Mode",
     "system_color_influence": "System Color Influence",
-    "system_mask_contrast": "System Mask Contrast",
-    "system_mask_bias": "System Mask Bias",
-    "system_mask_invert": "System Mask Invert",
     "system_blend_mode": "System Blend Mode",
     "ao_strength": "AO Strength",
     "ao_vertex_influence": "AO Vertex Influence",
@@ -97,26 +92,6 @@ BLEND_FIELDS = {
     "system_blend_mode",
     "ao_blend_mode",
 }
-
-SYSTEM_COLOR_INITIAL = {
-    "M_HT_Default_Material_01": (
-        (0.0, 0.0, 0.0, 1.0),
-        (0.0379085, 1.0, 0.0, 1.0),
-    ),
-    "M_HT_Default_Material_blow_01": (
-        (0.0, 0.0, 0.0, 1.0),
-        (0.0, 0.0, 0.0, 1.0),
-    ),
-    "M_HT_Default_Material_short_01": (
-        (0.0, 0.0, 0.0, 1.0),
-        (1.0, 1.0, 1.0, 1.0),
-    ),
-    "M_HT_Default_Material_short_02": (
-        (0.0, 0.0, 0.0, 1.0),
-        (0.7294118, 0.3686275, 0.3411765, 1.0),
-    ),
-}
-
 
 def material_instance_path(material_name):
     base_name = material_name[2:] if material_name.startswith("M_") else material_name
@@ -182,7 +157,18 @@ def build_contract(material_name, settings):
                 "R": "Random / ID vertex source",
                 "G": "Factor / Root-Tip vertex source",
                 "B": "Ambient AO vertex source",
-                "A": "System Color 01/02 selector",
+                "A": "Reserved compatibility channel; SystemColor Alpha is ignored",
+            },
+            "vertex_uv_payload": {
+                "version": 3,
+                "encoding": "HTUE_RGB_TAGGED_UV",
+                "UV1.RG": "SystemColor.RG in linear color space",
+                "UV2.R": "6 + packed UNORM8 Random/Depth",
+                "UV2.G": "Factor",
+                "UV3.R": "6 + Ambient AO",
+                "UV3.G": "SystemColor.B in linear color space",
+                "system_color_source": "evaluated SystemColor.RGB",
+                "system_color_alpha_used": False,
             },
             "texture_channels": {
                 "IRD Map.R": "ID texture source",
@@ -227,6 +213,13 @@ def validate_contract(data):
     )
     if synced != provided:
         errors.append("sync_parameters does not match the provided parameter set")
+    vertex_uv_payload = hair_tool.get("vertex_uv_payload") or {}
+    if int(vertex_uv_payload.get("version", 0)) != 3:
+        errors.append("vertex_uv_payload must use version 3")
+    if vertex_uv_payload.get("encoding") != "HTUE_RGB_TAGGED_UV":
+        errors.append("vertex_uv_payload encoding mismatch")
+    if vertex_uv_payload.get("system_color_alpha_used") is not False:
+        errors.append("SystemColor Alpha must be disabled")
     texture_names = {entry.get("param") for entry in data.get("textures") or []}
     if texture_names != set(TEXTURE_SUFFIXES):
         errors.append("texture roles must be Flow Map, IRD Map, ORM Map and Opacity Map")
