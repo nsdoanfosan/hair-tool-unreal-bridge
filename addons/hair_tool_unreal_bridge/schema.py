@@ -8,6 +8,10 @@ CONTRACT_PROPERTY = "htue_contract_json"
 LEGACY_STATE_PROPERTY = "htue_legacy_state_json"
 BRIDGE_NODE_NAME = "HTUE Hair Material Bridge"
 BRIDGE_GROUP_PREFIX = "HTUE_ColorBridge"
+SHADER_CLONE_PREFIX = "HTUE_HairShaderMain"
+INTERNAL_STACK_NODE_NAME = "HTUE Color Stack"
+ORIGINAL_SHADER_GROUP_PROPERTY = "htue_original_shader_group"
+AUGMENTED_LINKS_PROPERTY = "htue_augmented_hair_links"
 
 TARGET_TEXTURE_SETS = {
     "M_HT_Default_Material_01": "Hair_Long_01",

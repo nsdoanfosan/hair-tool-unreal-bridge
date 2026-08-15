@@ -28,6 +28,25 @@ MANAGED_TOP_LEVEL_NODES = (
     "HTUE UV",
 )
 
+HAIR_SOCKET_FIELDS = {
+    "base_color": "Base Color",
+    "root_color": "Root Color",
+    "root_mix": "Root Color Mix Factor",
+    "root_range": "Root Color Range",
+    "root_random_influence": "Root Texture Overaly",
+    "root_random_brightness": "Root  Texture Brightness",
+    "tip_color": "Tip Color",
+    "tip_mix": "Tip Color Mix Factor",
+    "tip_range": "Tip Color Range",
+    "tip_random_influence": "Tip Texture Overlay",
+    "tip_random_brightness": "Tip  Texture Brightness",
+    "depth_tint_color": "Depth Tint",
+    "depth_tint_influence": "Depth Mix Factor",
+    "ao_color_influence": "AO Mix Factor",
+    "roughness_minimum": "SpecRoughness",
+    "system_color_influence": "Debug  Color  Mix",
+}
+
 def find_hair_shader(material):
     if not material.use_nodes or material.node_tree is None:
         return None
@@ -39,7 +58,17 @@ def find_hair_shader(material):
     return None
 
 
-def _new_socket(tree, name, in_out, socket_type, default=None, min_value=None, max_value=None):
+def _new_socket(
+    tree,
+    name,
+    in_out,
+    socket_type,
+    default=None,
+    min_value=None,
+    max_value=None,
+    *,
+    hide_value=False,
+):
     socket = tree.interface.new_socket(name=name, in_out=in_out, socket_type=socket_type)
     if default is not None and hasattr(socket, "default_value"):
         socket.default_value = default
@@ -47,6 +76,8 @@ def _new_socket(tree, name, in_out, socket_type, default=None, min_value=None, m
         socket.min_value = min_value
     if max_value is not None and hasattr(socket, "max_value"):
         socket.max_value = max_value
+    if hasattr(socket, "hide_value"):
+        socket.hide_value = hide_value
     return socket
 
 
@@ -174,19 +205,40 @@ def _gray(tree, value, name):
 def _build_group(group, settings):
     group.nodes.clear()
     group.interface.clear()
-    for name in ("Random", "Factor", "AO Vertex", "System Mask", "Depth Vertex"):
+    for name in (
+        "Random",
+        "Factor",
+        "AO Vertex",
+        "AO Vertex Available",
+        "System Mask",
+        "Depth Vertex",
+    ):
         _new_socket(group, name, "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
+    _new_socket(
+        group,
+        "System Attribute Color",
+        "INPUT",
+        "NodeSocketColor",
+        (0.0, 0.0, 0.0, 1.0),
+    )
     _new_socket(group, "IRD Map", "INPUT", "NodeSocketColor", (0.0, 0.0, 0.0, 1.0))
     _new_socket(group, "ORM Map", "INPUT", "NodeSocketColor", (1.0, 1.0, 0.0, 1.0))
     for field, name in schema.VECTOR_FIELDS.items():
-        _new_socket(group, name, "INPUT", "NodeSocketColor", tuple(getattr(settings, field)))
+        _new_socket(
+            group,
+            name,
+            "INPUT",
+            "NodeSocketColor",
+            tuple(getattr(settings, field)),
+            hide_value=True,
+        )
     for field, name in schema.SCALAR_FIELDS.items():
         value = (
             schema.BLEND_MODE_VALUES[getattr(settings, field)]
             if field in schema.BLEND_FIELDS
             else float(getattr(settings, field))
         )
-        _new_socket(group, name, "INPUT", "NodeSocketFloat", value)
+        _new_socket(group, name, "INPUT", "NodeSocketFloat", value, hide_value=True)
     _new_socket(group, "Color", "OUTPUT", "NodeSocketColor")
     _new_socket(group, "Ambient Occlusion", "OUTPUT", "NodeSocketFloat")
 
@@ -271,12 +323,29 @@ def _build_group(group, settings):
     biased = _clamp01(group, _math(group, "ADD", recentered, i["System Mask Bias"]))
     inverted = _math(group, "SUBTRACT", one, biased)
     system_mask = _mix_float(group, i["System Mask Invert"], biased, inverted)
-    system_color = _blend(
+    # Hair Tool's Set System Color deformer writes full RGBA values. At the
+    # default mask settings Blender uses its RGB directly, so painting remains
+    # live. If the bridge mask controls are changed, switch to the same two-
+    # parameter reconstruction used by Unreal.
+    selected_system_color = _blend(
         group,
         "HTUE Select System Color",
         i["System Color 01"],
         i["System Color 02"],
         system_mask,
+        0.0,
+    )
+    contrast_delta = _math(group, "SUBTRACT", i["System Mask Contrast"], 1.0)
+    contrast_delta = _math(group, "ABSOLUTE", contrast_delta)
+    bias_delta = _math(group, "ABSOLUTE", i["System Mask Bias"])
+    mask_control = _math(group, "ADD", contrast_delta, bias_delta)
+    mask_control = _clamp01(group, _math(group, "ADD", mask_control, i["System Mask Invert"]))
+    system_color = _blend(
+        group,
+        "HTUE Apply System Mask Controls",
+        i["System Attribute Color"],
+        selected_system_color,
+        mask_control,
         0.0,
     )
     color = _blend(
@@ -288,7 +357,10 @@ def _build_group(group, settings):
         i["System Blend Mode"],
     )
 
-    ao_vertex = _mix_float(group, i["AO Vertex Influence"], one, i["AO Vertex"])
+    ao_vertex_influence = _math(
+        group, "MULTIPLY", i["AO Vertex Influence"], i["AO Vertex Available"]
+    )
+    ao_vertex = _mix_float(group, ao_vertex_influence, one, i["AO Vertex"])
     ao_texture = _mix_float(group, i["AO Texture Influence"], one, orm_r)
     ao_product = _clamp01(group, _math(group, "MULTIPLY", ao_vertex, ao_texture))
     ao = _mix_float(group, i["AO Strength"], one, ao_product)
@@ -412,6 +484,199 @@ def _link_unique(tree, output_socket, input_socket):
     tree.links.new(output_socket, input_socket)
 
 
+def _socket_value(socket):
+    value = socket.default_value
+    if hasattr(value, "__len__") and not isinstance(value, str):
+        return tuple(float(component) for component in value)
+    return float(value)
+
+
+def _capture_shader_inputs(material, tree, shader):
+    """Capture every Hair Tool group input while excluding obsolete HTUE links."""
+    result = {}
+    managed = set(MANAGED_TOP_LEVEL_NODES)
+    raw_augmented = material.get(schema.AUGMENTED_LINKS_PROPERTY)
+    augmented = {
+        (item.get("input"), item.get("node"), item.get("output"))
+        for item in (json.loads(str(raw_augmented)) if raw_augmented else [])
+    }
+    for socket in shader.inputs:
+        result[socket.name] = {
+            "default": _socket_value(socket),
+            "links": [
+                (link.from_node.name, link.from_socket.name)
+                for link in socket.links
+                if link.from_node.name not in managed
+                and (socket.name, link.from_node.name, link.from_socket.name) not in augmented
+            ],
+        }
+    return result
+
+
+def _restore_shader_inputs(tree, shader, state):
+    for socket_name, socket_state in state.items():
+        socket = shader.inputs.get(socket_name)
+        if socket is None:
+            continue
+        for link in list(socket.links):
+            tree.links.remove(link)
+        socket.default_value = socket_state["default"]
+        for node_name, output_name in socket_state["links"]:
+            node = tree.nodes.get(node_name)
+            output = node.outputs.get(output_name) if node else None
+            if output is not None:
+                tree.links.new(output, socket)
+
+
+def _group_input_output(group, socket_name):
+    candidates = []
+    for node in group.nodes:
+        if node.bl_idname != "NodeGroupInput":
+            continue
+        socket = node.outputs.get(socket_name)
+        if socket is not None:
+            candidates.append(socket)
+    if not candidates:
+        raise RuntimeError(f"HairShaderMain input was not found: {socket_name}")
+    return next((socket for socket in candidates if socket.is_linked), candidates[0])
+
+
+def _ensure_clone_input(group, name, socket_type):
+    for item in group.interface.items_tree:
+        if (
+            getattr(item, "item_type", None) == "SOCKET"
+            and getattr(item, "in_out", None) == "INPUT"
+            and item.name == name
+        ):
+            item.hide_value = True
+            return item
+    return _new_socket(group, name, "INPUT", socket_type, hide_value=True)
+
+
+def _install_stack_in_clone(clone, stack_group):
+    """Replace only the legacy color result inside a per-material group copy."""
+    for name, socket_type in (
+        ("HTUE System Mask", "NodeSocketFloat"),
+        ("HTUE IRD Map", "NodeSocketColor"),
+        ("HTUE ORM Map", "NodeSocketColor"),
+    ):
+        _ensure_clone_input(clone, name, socket_type)
+
+    stack = clone.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+    if stack is None or stack.bl_idname != "ShaderNodeGroup":
+        if stack is not None:
+            clone.nodes.remove(stack)
+        stack = clone.nodes.new("ShaderNodeGroup")
+        stack.name = schema.INTERNAL_STACK_NODE_NAME
+    stack.label = "HTUE synchronized color stack (legacy blend result replacement)"
+    stack.node_tree = stack_group
+
+    native_links = {
+        "Base Color": "HT Base Color",
+        "Root Color": "HT Root Color",
+        "Root Color Mix Factor": "HT Root Mix",
+        "Root Color Range": "HT Root Range",
+        "Root Texture Overaly": "HT Root Random Influence",
+        "Root  Texture Brightness": "HT Root Random Brightness",
+        "Tip Color": "HT Tip Color",
+        "Tip Color Mix Factor": "HT Tip Mix",
+        "Tip Color Range": "HT Tip Range",
+        "Tip Texture Overlay": "HT Tip Random Influence",
+        "Tip  Texture Brightness": "HT Tip Random Brightness",
+        "Random Id [Map]": "Random",
+        "Factor [Map]": "Factor",
+        "Depth [Map]": "Depth Vertex",
+        "Depth Tint": "Depth Tint Color",
+        "Depth Mix Factor": "Depth Tint Influence",
+        "Vert Color AO [Map]": "AO Vertex",
+        "Debug Color": "System Attribute Color",
+        "Debug  Color  Mix": "System Color Influence",
+        "AO Mix Factor": "AO Color Influence",
+    }
+    for source_name, target_name in native_links.items():
+        _link_unique(clone, _group_input_output(clone, source_name), stack.inputs[target_name])
+    for source_name, target_name in (
+        ("HTUE System Mask", "System Mask"),
+        ("HTUE IRD Map", "IRD Map"),
+        ("HTUE ORM Map", "ORM Map"),
+    ):
+        _link_unique(clone, _group_input_output(clone, source_name), stack.inputs[target_name])
+
+    color_target = next(
+        (
+            node
+            for node in clone.nodes
+            if node.bl_idname == "NodeReroute" and node.label == "Color"
+        ),
+        None,
+    )
+    if color_target is None:
+        raise RuntimeError("HairShaderMain final Color reroute was not found")
+    _link_unique(clone, stack.outputs["Color"], color_target.inputs[0])
+    stack["htue_replaces_legacy_color_blends"] = True
+    return stack
+
+
+def _find_attribute_node(tree, attribute_name):
+    return next(
+        (
+            node
+            for node in tree.nodes
+            if node.bl_idname == "ShaderNodeAttribute"
+            and node.attribute_name == attribute_name
+            and not node.name.startswith("HTUE ")
+        ),
+        None,
+    )
+
+
+def _ensure_hair_attribute_links(material, shader):
+    """Fill only missing Hair Tool attribute inputs; never replace existing links."""
+    tree = material.node_tree
+    raw_augmented = material.get(schema.AUGMENTED_LINKS_PROPERTY)
+    augmented = list(json.loads(str(raw_augmented)) if raw_augmented else [])
+    specs = (
+        ("Factor [Map]", "Factor", "Factor", "HTUE Factor"),
+        ("Random Id [Map]", "Random", "Color", "HTUE Random"),
+        ("Debug Color", "SystemColor", "Color", "HTUE SystemColor"),
+        ("Vert Color AO [Map]", "AO", "Color", "HTUE AO"),
+        ("Depth [Map]", "Depth", "Factor", "HTUE Depth"),
+    )
+    nodes = {}
+    for input_name, attribute_name, output_name, fallback_name in specs:
+        socket = shader.inputs.get(input_name)
+        if socket is None or socket.is_linked:
+            continue
+        node = _find_attribute_node(tree, attribute_name)
+        if node is None:
+            node = _top_node(tree, "ShaderNodeAttribute", fallback_name)
+            node.attribute_name = attribute_name
+        output = node.outputs.get(output_name)
+        if output is None:
+            continue
+        tree.links.new(output, socket)
+        record = {"input": input_name, "node": node.name, "output": output_name}
+        if record not in augmented:
+            augmented.append(record)
+        nodes[attribute_name] = node
+    material[schema.AUGMENTED_LINKS_PROPERTY] = json.dumps(augmented, sort_keys=True)
+    return nodes
+
+
+def _remove_obsolete_top_level_nodes(tree):
+    groups = []
+    for name in MANAGED_TOP_LEVEL_NODES:
+        node = tree.nodes.get(name)
+        if node is None:
+            continue
+        if getattr(node, "node_tree", None) is not None:
+            groups.append(node.node_tree)
+        tree.nodes.remove(node)
+    for group in groups:
+        if group.users == 0:
+            bpy.data.node_groups.remove(group)
+
+
 def setup_material(material):
     shader = find_hair_shader(material)
     if shader is None:
@@ -420,31 +685,42 @@ def setup_material(material):
     if not settings.initialized:
         initialise_settings(material, shader)
     _save_legacy_state(material, shader)
+    from . import deformer_sync
 
-    group_name = f"{schema.BRIDGE_GROUP_PREFIX}::{material.name}"
-    group = bpy.data.node_groups.get(group_name)
-    if group is None:
-        group = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
-    _build_group(group, settings)
+    deformer_sync.sync_system_colors(material)
+    ao_vertex_available = deformer_sync.has_ao_source(material)
 
     tree = material.node_tree
-    bridge = _top_node(tree, "ShaderNodeGroup", schema.BRIDGE_NODE_NAME)
-    bridge.node_tree = group
-    bridge.label = "Blender / Unreal synchronized color stack"
-    bridge.location = (shader.location.x - 420, shader.location.y + 120)
+    input_state = _capture_shader_inputs(material, tree, shader)
 
-    attribute_specs = {
-        "HTUE Random": "Random",
-        "HTUE Factor": "Factor",
-        "HTUE AO": "AO",
-        "HTUE SystemColor": "SystemColor",
-        "HTUE Depth": "Depth",
-    }
-    attributes = {}
-    for node_name, attribute_name in attribute_specs.items():
-        node = _top_node(tree, "ShaderNodeAttribute", node_name)
-        node.attribute_name = attribute_name
-        attributes[node_name] = node
+    original_name = str(material.get(schema.ORIGINAL_SHADER_GROUP_PROPERTY) or "")
+    original_group = bpy.data.node_groups.get(original_name) if original_name else None
+    if original_group is None or original_group.name.startswith(schema.SHADER_CLONE_PREFIX):
+        if not shader.node_tree.name.startswith(schema.SHADER_CLONE_PREFIX):
+            original_group = shader.node_tree
+            material[schema.ORIGINAL_SHADER_GROUP_PROPERTY] = original_group.name
+        else:
+            raise RuntimeError(f"{material.name}: original HairShaderMain group is unavailable")
+
+    old_clone = shader.node_tree if shader.node_tree.name.startswith(schema.SHADER_CLONE_PREFIX) else None
+    shader.node_tree = original_group
+    if old_clone is not None and old_clone.users == 0:
+        bpy.data.node_groups.remove(old_clone)
+    _remove_obsolete_top_level_nodes(tree)
+
+    stack_name = f"{schema.BRIDGE_GROUP_PREFIX}::{material.name}"
+    old_stack = bpy.data.node_groups.get(stack_name)
+    if old_stack is not None and old_stack.users == 0:
+        bpy.data.node_groups.remove(old_stack)
+    stack_group = bpy.data.node_groups.new(stack_name, "ShaderNodeTree")
+    _build_group(stack_group, settings)
+
+    clone = original_group.copy()
+    clone.name = f"{schema.SHADER_CLONE_PREFIX}::{material.name}"
+    stack = _install_stack_in_clone(clone, stack_group)
+    stack.inputs["AO Vertex Available"].default_value = float(ao_vertex_available)
+    shader.node_tree = clone
+    _restore_shader_inputs(tree, shader, input_state)
 
     uv = _top_node(tree, "ShaderNodeTexCoord", "HTUE UV")
     ird = _top_node(tree, "ShaderNodeTexImage", "HTUE IRD Map")
@@ -453,51 +729,69 @@ def setup_material(material):
     orm.image = _image(settings.texture_root, settings.texture_set, "ORM Map")
     _link_unique(tree, uv.outputs["UV"], ird.inputs["Vector"])
     _link_unique(tree, uv.outputs["UV"], orm.inputs["Vector"])
+    _ensure_hair_attribute_links(material, shader)
+    system_attribute = _find_attribute_node(tree, "SystemColor") or tree.nodes.get("HTUE SystemColor")
+    if system_attribute is None:
+        system_attribute = _top_node(tree, "ShaderNodeAttribute", "HTUE SystemColor")
+        system_attribute.attribute_name = "SystemColor"
 
-    _link_unique(tree, attributes["HTUE Random"].outputs["Factor"], bridge.inputs["Random"])
-    _link_unique(tree, attributes["HTUE Factor"].outputs["Factor"], bridge.inputs["Factor"])
-    _link_unique(tree, attributes["HTUE AO"].outputs["Factor"], bridge.inputs["AO Vertex"])
-    _link_unique(
-        tree, attributes["HTUE SystemColor"].outputs["Alpha"], bridge.inputs["System Mask"]
-    )
-    _link_unique(tree, attributes["HTUE Depth"].outputs["Factor"], bridge.inputs["Depth Vertex"])
-    _link_unique(tree, ird.outputs["Color"], bridge.inputs["IRD Map"])
-    _link_unique(tree, orm.outputs["Color"], bridge.inputs["ORM Map"])
-    _link_unique(tree, bridge.outputs["Color"], shader.inputs["Base Color"])
-
-    for name in (
-        "Root Color Mix Factor",
-        "Tip Color Mix Factor",
-        "Debug  Color  Mix",
-        "Depth Mix Factor",
-        "AO Mix Factor",
-    ):
-        socket = shader.inputs.get(name)
-        if socket is not None:
-            socket.default_value = 0.0
+    _link_unique(tree, system_attribute.outputs["Alpha"], shader.inputs["HTUE System Mask"])
+    _link_unique(tree, ird.outputs["Color"], shader.inputs["HTUE IRD Map"])
+    _link_unique(tree, orm.outputs["Color"], shader.inputs["HTUE ORM Map"])
 
     sync_material(material)
     contract.persist_material_contract(material)
-    return bridge
+    return stack
 
 
 def sync_material(material):
     settings = material.htue_settings
-    bridge = material.node_tree.nodes.get(schema.BRIDGE_NODE_NAME) if material.node_tree else None
-    if bridge is None or bridge.node_tree is None:
+    shader = find_hair_shader(material)
+    if shader is None or shader.node_tree is None:
+        return
+    stack = shader.node_tree.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+    if stack is None or stack.node_tree is None:
         return
     for field, name in schema.VECTOR_FIELDS.items():
-        socket = bridge.inputs.get(name)
+        socket = stack.inputs.get(name)
         if socket is not None:
             socket.default_value = tuple(getattr(settings, field))
     for field, name in schema.SCALAR_FIELDS.items():
-        socket = bridge.inputs.get(name)
+        socket = stack.inputs.get(name)
         if socket is not None:
             socket.default_value = (
                 schema.BLEND_MODE_VALUES[getattr(settings, field)]
                 if field in schema.BLEND_FIELDS
                 else float(getattr(settings, field))
             )
+    for field, socket_name in HAIR_SOCKET_FIELDS.items():
+        socket = shader.inputs.get(socket_name)
+        if socket is not None:
+            socket.default_value = getattr(settings, field)
+
+
+def pull_hair_tool_values(material):
+    """Mirror the unchanged Hair Tool interface into the Unreal contract UI."""
+    shader = find_hair_shader(material)
+    settings = getattr(material, "htue_settings", None)
+    if shader is None or settings is None or not settings.initialized:
+        return False
+    captured = {}
+    for field, socket_name in HAIR_SOCKET_FIELDS.items():
+        socket = shader.inputs.get(socket_name)
+        if socket is not None:
+            captured[field] = _socket_value(socket)
+    changed = False
+    for field, value in captured.items():
+        current = getattr(settings, field)
+        if hasattr(current, "__len__") and not isinstance(current, str):
+            differs = any(abs(float(a) - float(b)) > 1.0e-6 for a, b in zip(current, value))
+        else:
+            differs = abs(float(current) - float(value)) > 1.0e-6
+        if differs:
+            setattr(settings, field, value)
+            changed = True
+    return changed
 
 
 def restore_material(material):
@@ -506,8 +800,16 @@ def restore_material(material):
         return
     raw_state = material.get(schema.LEGACY_STATE_PROPERTY)
     state = json.loads(str(raw_state)) if raw_state else None
-    bridge = tree.nodes.get(schema.BRIDGE_NODE_NAME)
-    group = bridge.node_tree if bridge and bridge.node_tree else None
+    shader = tree.nodes.get(state.get("shader_node")) if state else find_hair_shader(material)
+    clone = shader.node_tree if shader and shader.node_tree.name.startswith(schema.SHADER_CLONE_PREFIX) else None
+    stack_group = None
+    if clone is not None:
+        stack = clone.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+        stack_group = stack.node_tree if stack and stack.node_tree else None
+    original_name = str(material.get(schema.ORIGINAL_SHADER_GROUP_PROPERTY) or "")
+    original_group = bpy.data.node_groups.get(original_name)
+    if shader and original_group:
+        shader.node_tree = original_group
     if state:
         shader = tree.nodes.get(state.get("shader_node")) or find_hair_shader(material)
         if shader:
@@ -523,13 +825,30 @@ def restore_material(material):
                     source_socket = source_node.outputs.get(link_state.get("socket")) if source_node else None
                     if source_socket:
                         tree.links.new(source_socket, socket)
+    raw_augmented = material.get(schema.AUGMENTED_LINKS_PROPERTY)
+    for link_state in json.loads(str(raw_augmented)) if raw_augmented else []:
+        socket = shader.inputs.get(link_state.get("input")) if shader else None
+        if socket is None:
+            continue
+        for link in list(socket.links):
+            if (
+                link.from_node.name == link_state.get("node")
+                and link.from_socket.name == link_state.get("output")
+            ):
+                tree.links.remove(link)
     for name in MANAGED_TOP_LEVEL_NODES:
         node = tree.nodes.get(name)
         if node is not None:
             tree.nodes.remove(node)
-    if group is not None and group.users == 0:
-        bpy.data.node_groups.remove(group)
+    for group in (clone, stack_group):
+        if group is not None and group.users == 0:
+            bpy.data.node_groups.remove(group)
     material.htue_settings.initialized = False
-    for key in (schema.CONTRACT_PROPERTY, schema.LEGACY_STATE_PROPERTY):
+    for key in (
+        schema.CONTRACT_PROPERTY,
+        schema.LEGACY_STATE_PROPERTY,
+        schema.ORIGINAL_SHADER_GROUP_PROPERTY,
+        schema.AUGMENTED_LINKS_PROPERTY,
+    ):
         if key in material:
             del material[key]

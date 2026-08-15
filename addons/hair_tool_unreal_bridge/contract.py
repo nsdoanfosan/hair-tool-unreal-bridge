@@ -13,6 +13,16 @@ def persist_material_contract(material):
     return json.loads(encoded)
 
 
+def refresh_material_contract(material):
+    """Pull live Hair Tool sockets and Deformer colors before export reads JSON."""
+    from . import deformer_sync, nodes
+
+    nodes.pull_hair_tool_values(material)
+    deformer_result = deformer_sync.sync_system_colors(material)
+    data = persist_material_contract(material)
+    return data, deformer_result
+
+
 def material_contract(material):
     value = material.get(schema.CONTRACT_PROPERTY)
     if not value:
