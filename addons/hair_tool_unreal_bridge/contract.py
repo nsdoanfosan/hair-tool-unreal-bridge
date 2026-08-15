@@ -9,7 +9,8 @@ def persist_material_contract(material):
     if settings is None or not settings.initialized:
         return None
     encoded = schema.dumps_contract(material.name, settings)
-    material[schema.CONTRACT_PROPERTY] = encoded
+    if str(material.get(schema.CONTRACT_PROPERTY) or "") != encoded:
+        material[schema.CONTRACT_PROPERTY] = encoded
     return json.loads(encoded)
 
 

@@ -128,9 +128,27 @@ assert abs(material.htue_settings.root_mix - bridge_root_mix) < 1.0e-6
 assert abs(stack.inputs["HT Root Mix"].default_value - bridge_root_mix) < 1.0e-6
 
 # Bridge edits update only the replacement stack, never the legacy shader UI.
+tracked_stack_values = {
+    name: (
+        tuple(stack.inputs[name].default_value)
+        if hasattr(stack.inputs[name].default_value, "__len__")
+        else float(stack.inputs[name].default_value)
+    )
+    for name in (*schema.VECTOR_FIELDS.values(), *schema.SCALAR_FIELDS.values())
+}
 material.htue_settings.root_mix = 0.65
 assert abs(stack.inputs["HT Root Mix"].default_value - 0.65) < 1.0e-6
 assert abs(shader.inputs["Root Color Mix Factor"].default_value - 0.35) < 1.0e-6
+changed_stack_inputs = [
+    name
+    for name, before in tracked_stack_values.items()
+    if before != (
+        tuple(stack.inputs[name].default_value)
+        if hasattr(stack.inputs[name].default_value, "__len__")
+        else float(stack.inputs[name].default_value)
+    )
+]
+assert changed_stack_inputs == ["HT Root Mix"], changed_stack_inputs
 
 # Root Range=0 must use Hair Tool's safe-Map-Range fallback of one.
 root_zero = stack.node_tree.nodes["HTUE Root Range Zero Is Full"]

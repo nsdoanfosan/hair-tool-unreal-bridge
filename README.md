@@ -72,7 +72,10 @@ for Source, Base, System Color, Root, Tip, ID, Depth, and AO/Roughness. Hair
 Tool's original Surface inputs remain available, but their legacy color mixing
 does not feed the replacement stack.
 Existing bridge materials are upgraded automatically when their `.blend` file
-is reopened; **Sync Contract** also performs the UI migration immediately.
+is reopened; **Refresh Hooks + Unreal** also performs the UI migration immediately.
+Interactive edits update only the one stack socket owned by the changed field;
+unchanged sockets and unchanged contract JSON are not rewritten. This avoids
+the repeated shader invalidation that previously caused white viewport flashes.
 
 **Restore Original Hair Tool Nodes** removes the compatibility copy and added
 links, then reconnects the captured Hair Tool input state. The original Hair

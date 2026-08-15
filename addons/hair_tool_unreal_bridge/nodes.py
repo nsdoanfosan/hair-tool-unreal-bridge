@@ -704,6 +704,7 @@ def setup_material(material):
 
 
 def sync_material(material):
+    """Synchronize every Bridge-owned socket during setup or migration."""
     settings = material.htue_settings
     shader = find_hair_shader(material)
     if shader is None or shader.node_tree is None:
@@ -711,18 +712,47 @@ def sync_material(material):
     stack = shader.node_tree.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
     if stack is None or stack.node_tree is None:
         return
-    for field, name in schema.VECTOR_FIELDS.items():
-        socket = stack.inputs.get(name)
-        if socket is not None:
-            socket.default_value = tuple(getattr(settings, field))
-    for field, name in schema.SCALAR_FIELDS.items():
-        socket = stack.inputs.get(name)
-        if socket is not None:
-            socket.default_value = (
-                schema.BLEND_MODE_VALUES[getattr(settings, field)]
-                if field in schema.BLEND_FIELDS
-                else float(getattr(settings, field))
-            )
+    for field in (*schema.VECTOR_FIELDS, *schema.SCALAR_FIELDS):
+        _sync_material_field_to_stack(settings, stack, field)
+
+
+def _socket_value_matches(current, target, tolerance=1.0e-7):
+    if hasattr(current, "__len__") and not isinstance(current, str):
+        return len(current) == len(target) and all(
+            abs(float(a) - float(b)) <= tolerance for a, b in zip(current, target)
+        )
+    return abs(float(current) - float(target)) <= tolerance
+
+
+def _sync_material_field_to_stack(settings, stack, field):
+    name = schema.VECTOR_FIELDS.get(field) or schema.SCALAR_FIELDS.get(field)
+    if name is None:
+        return False
+    socket = stack.inputs.get(name)
+    if socket is None:
+        return False
+    if field in schema.VECTOR_FIELDS:
+        target = tuple(getattr(settings, field))
+    elif field in schema.BLEND_FIELDS:
+        target = schema.BLEND_MODE_VALUES[getattr(settings, field)]
+    else:
+        target = float(getattr(settings, field))
+    if _socket_value_matches(socket.default_value, target):
+        return False
+    socket.default_value = target
+    return True
+
+
+def sync_material_field(material, field):
+    """Update only the socket owned by one edited UI property."""
+    settings = material.htue_settings
+    shader = find_hair_shader(material)
+    if shader is None or shader.node_tree is None:
+        return False
+    stack = shader.node_tree.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+    if stack is None or stack.node_tree is None:
+        return False
+    return _sync_material_field_to_stack(settings, stack, field)
 def restore_material(material):
     tree = material.node_tree
     if tree is None:
