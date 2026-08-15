@@ -40,6 +40,20 @@ RFAOS_UV_TAG = 4.0
 RFAOS_UV_TAG_LOWER = 3.99
 RFAOS_UV_TAG_UPPER = 5.01
 
+# Material Instance groups mirror the Blender panel order. Synced controls are
+# deliberately separated from values that remain Unreal-only.
+GROUP_SYNC_TEXTURES = "01 | HTUE SYNC - Textures"
+GROUP_SYNC_BASE = "02 | HTUE SYNC - Base"
+GROUP_SYNC_ROOT = "03 | HTUE SYNC - Root"
+GROUP_SYNC_TIP = "04 | HTUE SYNC - Tip"
+GROUP_SYNC_ID = "05 | HTUE SYNC - ID"
+GROUP_SYNC_DEPTH = "06 | HTUE SYNC - Depth"
+GROUP_SYNC_SYSTEM = "07 | HTUE SYNC - System Color"
+GROUP_SYNC_AO = "08 | HTUE SYNC - AO & Roughness"
+GROUP_UNREAL_UV = "90 | UNREAL ONLY - UV"
+GROUP_UNREAL_SURFACE = "91 | UNREAL ONLY - Surface & Flow"
+GROUP_UNREAL_OPACITY = "92 | UNREAL ONLY - Opacity"
+
 INSTANCE_PRESERVED_SCALAR_PARAMETERS = {
     "System Color Mix",
     "System Color Multiply",
@@ -133,13 +147,13 @@ def connect_property(source, output_name, property_name):
 
 
 def parameter_common(node, name, group, order, description):
-    if "BLENDER SYNC" in group:
+    if "HTUE SYNC" in group:
         description = (
-            f"[BLENDER SYNC] {description}. Re-export overwrites this parameter."
+            f"[HTUE SYNC] {description}. Re-export overwrites this parameter."
         )
-    elif "UNREAL OVERRIDE" in group:
+    elif "UNREAL ONLY" in group:
         description = (
-            f"[UNREAL OVERRIDE] {description}. Existing MI values survive re-export."
+            f"[UNREAL ONLY] {description}. Existing MI values survive re-export."
         )
     set_prop(node, "parameter_name", name)
     set_prop(node, "group", group)
@@ -395,13 +409,13 @@ def build_master(material):
     linear_gray = unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_GRAYSCALE
 
     comment(material, "01 | TEXTURES + UV\nFlow / IRD(R=ID,G=Root,B=Depth) / ORM(R=AO,G=Roughness,B=Metallic) / Opacity", -6200, -3200, 1900, 1650)
-    shared_uv = build_uv(material, "Main UV", "08 | UV", -2940)
-    opacity_uv = build_uv(material, "Opacity UV", "08 | UV", 1760)
+    shared_uv = build_uv(material, "Main UV", GROUP_UNREAL_UV, -2940)
+    opacity_uv = build_uv(material, "Opacity UV", GROUP_UNREAL_UV, 1760)
 
-    flow = texture_parameter(material, "Flow Map", "/Game/Textures/Hair_Long_01_flow", "01 | BLENDER SYNC - TEXTURES", 0, -4800, -2960, virtual_masks)
-    ird = texture_parameter(material, "IRD Map", "/Game/Textures/Hair_Long_01_IRD", "01 | BLENDER SYNC - TEXTURES", 1, -4800, -2620, virtual_masks)
-    orm = texture_parameter(material, "ORM Map", "/Game/Textures/Hair_Long_01_ORM", "01 | BLENDER SYNC - TEXTURES", 2, -4800, -2280, virtual_masks)
-    opacity = texture_parameter(material, "Opacity Map", "/Game/Textures/Hair_Long_01_Opacity", "01 | BLENDER SYNC - TEXTURES", 3, -4800, 1980, linear_gray)
+    flow = texture_parameter(material, "Flow Map", "/Game/Textures/Hair_Long_01_flow", GROUP_SYNC_TEXTURES, 0, -4800, -2960, virtual_masks)
+    ird = texture_parameter(material, "IRD Map", "/Game/Textures/Hair_Long_01_IRD", GROUP_SYNC_TEXTURES, 1, -4800, -2620, virtual_masks)
+    orm = texture_parameter(material, "ORM Map", "/Game/Textures/Hair_Long_01_ORM", GROUP_SYNC_TEXTURES, 2, -4800, -2280, virtual_masks)
+    opacity = texture_parameter(material, "Opacity Map", "/Game/Textures/Hair_Long_01_Opacity", GROUP_SYNC_TEXTURES, 3, -4800, 1980, linear_gray)
     for node in (flow, ird, orm):
         connect(shared_uv, "", node, "UVs")
     connect(opacity_uv, "", opacity, "UVs")
@@ -625,23 +639,23 @@ def build_master(material):
         -2440,
         -1480,
     )
-    id_map_influence = scalar(material, "ID Map Influence", 0.0, "04 | ID Root Depth", 0, -4080, -1320, "0 matches Blender's exported Random attribute; 1 opts into the IRD.R ID map")
+    id_map_influence = scalar(material, "ID Map Influence", 0.0, GROUP_SYNC_ID, 0, -4080, -1320, "0 matches Blender's exported Random attribute; 1 opts into the IRD.R ID map")
     id_driver = lerp(material, rfaos_random, ird, id_map_influence, -3400, -1460, "", "R")
 
-    base_color = vector(material, "HT Base Color", (0.02, 0.02, 0.02, 1), "02 | BLENDER SYNC - HAIR TOOL", 0, -3160, -1740, "Blender HairShaderMain Base Color")
+    base_color = vector(material, "HT Base Color", (0.02, 0.02, 0.02, 1), GROUP_SYNC_BASE, 0, -3160, -1740, "Blender HairShaderMain Base Color")
     comment(material, "02 + 04 | HAIR TOOL COLOR + ID ROOT DEPTH\nRFAOS.G Factor drives Base/Root/Tip; IRD supplies ID, Root and Depth masks.", -3300, -1940, 3050, 2050)
-    root_color = vector(material, "HT Root Color", (0.299, 0.115, 0.037, 1), "02 | BLENDER SYNC - HAIR TOOL", 1, -3160, -1540, "Blender HairShaderMain Root Color")
-    tip_color = vector(material, "HT Tip Color", (0.784, 0.499, 0.303, 1), "02 | BLENDER SYNC - HAIR TOOL", 2, -3160, -1340, "Blender HairShaderMain Tip Color")
-    root_mix = scalar(material, "HT Root Mix", 1.0, "02 | BLENDER SYNC - HAIR TOOL", 3, -3160, -1120, "Root color blend strength")
-    root_range = scalar(material, "HT Root Range", 0.0, "02 | BLENDER SYNC - HAIR TOOL", 4, -2960, -1120, "Root extent driven by RFAOS.G Factor")
-    root_random = scalar(material, "HT Root Random Influence", 0.0, "02 | BLENDER SYNC - HAIR TOOL", 5, -2760, -1120, "Random/ID variation on root extent")
-    root_brightness = scalar(material, "HT Root Random Brightness", 0.5, "02 | BLENDER SYNC - HAIR TOOL", 6, -2560, -1120, "Random/ID bias for root")
-    root_blend_mode = scalar(material, "Root Blend Mode", 0.0, "02 | BLENDER SYNC - HAIR TOOL", 7, -2360, -1120, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
-    tip_mix = scalar(material, "HT Tip Mix", 1.0, "02 | BLENDER SYNC - HAIR TOOL", 8, -3160, -920, "Tip color blend strength")
-    tip_range = scalar(material, "HT Tip Range", 1.0, "02 | BLENDER SYNC - HAIR TOOL", 9, -2960, -920, "Tip extent driven by RFAOS.G Factor")
-    tip_random = scalar(material, "HT Tip Random Influence", 0.0, "02 | BLENDER SYNC - HAIR TOOL", 10, -2760, -920, "Random/ID variation on tip extent")
-    tip_brightness = scalar(material, "HT Tip Random Brightness", 0.0, "02 | BLENDER SYNC - HAIR TOOL", 11, -2560, -920, "Random/ID bias for tip")
-    tip_blend_mode = scalar(material, "Tip Blend Mode", 0.0, "02 | BLENDER SYNC - HAIR TOOL", 12, -2360, -920, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
+    root_color = vector(material, "HT Root Color", (0.299, 0.115, 0.037, 1), GROUP_SYNC_ROOT, 0, -3160, -1540, "Blender HairShaderMain Root Color")
+    tip_color = vector(material, "HT Tip Color", (0.784, 0.499, 0.303, 1), GROUP_SYNC_TIP, 0, -3160, -1340, "Blender HairShaderMain Tip Color")
+    root_mix = scalar(material, "HT Root Mix", 1.0, GROUP_SYNC_ROOT, 1, -3160, -1120, "Root color blend strength; 0 disables the Root stage")
+    root_range = scalar(material, "HT Root Range", 0.0, GROUP_SYNC_ROOT, 2, -2960, -1120, "Root extent driven by RFAOS.G Factor")
+    root_random = scalar(material, "HT Root Random Influence", 0.0, GROUP_SYNC_ROOT, 3, -2760, -1120, "Random/ID variation on root extent")
+    root_brightness = scalar(material, "HT Root Random Brightness", 0.5, GROUP_SYNC_ROOT, 4, -2560, -1120, "Random/ID bias for root")
+    root_blend_mode = scalar(material, "Root Blend Mode", 0.0, GROUP_SYNC_ROOT, 6, -2360, -1120, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
+    tip_mix = scalar(material, "HT Tip Mix", 1.0, GROUP_SYNC_TIP, 1, -3160, -920, "Tip color blend strength; 0 disables the Tip stage")
+    tip_range = scalar(material, "HT Tip Range", 1.0, GROUP_SYNC_TIP, 2, -2960, -920, "Tip extent driven by RFAOS.G Factor")
+    tip_random = scalar(material, "HT Tip Random Influence", 0.0, GROUP_SYNC_TIP, 3, -2760, -920, "Random/ID variation on tip extent")
+    tip_brightness = scalar(material, "HT Tip Random Brightness", 0.0, GROUP_SYNC_TIP, 4, -2560, -920, "Random/ID bias for tip")
+    tip_blend_mode = scalar(material, "Tip Blend Mode", 0.0, GROUP_SYNC_TIP, 6, -2360, -920, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
 
     zero = constant(material, 0.0, -2480, -760)
     eps = constant(material, 0.001, -2480, -700)
@@ -656,7 +670,7 @@ def build_master(material):
     root_extent = lerp(material, one, root_id_add, root_random, -2070, -930)
     root_weight = binary(material, "MaterialExpressionMultiply", root_saturate, root_extent, -1320, -1180)
     root_weight = binary(material, "MaterialExpressionMultiply", root_weight, root_mix, -1120, -1180)
-    root_map_influence = scalar(material, "Root Map Influence", 0.0, "04 | BLENDER SYNC - ID ROOT DEPTH", 1, -1700, -900, "Optional IRD.G root mask; 0 preserves the RFAOS.G vertex mask")
+    root_map_influence = scalar(material, "Root Map Influence", 0.0, GROUP_SYNC_ROOT, 5, -1700, -900, "Optional IRD.G root mask; 0 preserves the RFAOS.G vertex mask")
     root_map = lerp(material, one, ird, root_map_influence, -1460, -900, "", "G")
     root_weight = binary(material, "MaterialExpressionMultiply", root_weight, root_map, -900, -1120)
     root_weight = unary(material, "MaterialExpressionSaturate", root_weight, -700, -1120)
@@ -673,35 +687,35 @@ def build_master(material):
     tip_extent = lerp(material, one, tip_id_add, tip_random, -2070, -350)
     tip_weight = binary(material, "MaterialExpressionMultiply", tip_saturate, tip_extent, -1260, -620)
     tip_weight = binary(material, "MaterialExpressionMultiply", tip_weight, tip_mix, -1060, -620)
-    tip_map_influence = scalar(material, "Tip Map Influence", 0.0, "04 | BLENDER SYNC - ID ROOT DEPTH", 2, -1500, -500, "Optional OneMinus(IRD.G) tip mask; 0 preserves the RFAOS.G vertex mask")
+    tip_map_influence = scalar(material, "Tip Map Influence", 0.0, GROUP_SYNC_TIP, 5, -1500, -500, "Optional OneMinus(IRD.G) tip mask; 0 preserves the RFAOS.G vertex mask")
     tip_texture_mask = unary(material, "MaterialExpressionOneMinus", ird, -1300, -450, "G")
     tip_map = lerp(material, one, tip_texture_mask, tip_map_influence, -1120, -450)
     tip_weight = binary(material, "MaterialExpressionMultiply", tip_weight, tip_map, -880, -520)
     tip_weight = unary(material, "MaterialExpressionSaturate", tip_weight, -860, -620)
     hair_tool_color = blend_stage(material, root_result, tip_color, tip_weight, tip_blend_mode, -620, -1180)
 
-    id_tint = vector(material, "ID Tint Color", (1, 1, 1, 1), "04 | BLENDER SYNC - ID ROOT DEPTH", 3, -420, -860, "Optional tint selected by the blended vertex/texture ID source")
-    id_tint_influence = scalar(material, "ID Tint Influence", 0.0, "04 | BLENDER SYNC - ID ROOT DEPTH", 4, -420, -660, "Strength of the ID tint")
-    id_blend_mode = scalar(material, "ID Blend Mode", 1.0, "04 | BLENDER SYNC - ID ROOT DEPTH", 5, -220, -660, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
+    id_tint = vector(material, "ID Tint Color", (1, 1, 1, 1), GROUP_SYNC_ID, 1, -420, -860, "Optional tint selected by the blended vertex/texture ID source")
+    id_tint_influence = scalar(material, "ID Tint Influence", 0.0, GROUP_SYNC_ID, 2, -420, -660, "Strength of the ID tint; 0 disables the ID tint stage")
+    id_blend_mode = scalar(material, "ID Blend Mode", 1.0, GROUP_SYNC_ID, 3, -220, -660, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
     id_mask = binary(material, "MaterialExpressionMultiply", id_driver, id_tint_influence, -180, -760)
     id_result = blend_stage(material, hair_tool_color, id_tint, id_mask, id_blend_mode, 20, -1080)
 
-    depth_map_influence = scalar(material, "Depth Map Influence", 1.0, "04 | BLENDER SYNC - ID ROOT DEPTH", 6, -420, -420, "0 uses packed Depth vertex data; 1 uses IRD.B")
+    depth_map_influence = scalar(material, "Depth Map Influence", 1.0, GROUP_SYNC_DEPTH, 0, -420, -420, "0 uses packed Depth vertex data; 1 uses IRD.B")
     depth_driver = lerp(material, rfaos_depth, ird, depth_map_influence, -180, -440, "", "B")
-    depth_tint = vector(material, "Depth Tint Color", (0.85, 0.85, 0.85, 1), "04 | BLENDER SYNC - ID ROOT DEPTH", 7, -420, -220, "Optional depth tint")
-    depth_influence = scalar(material, "Depth Tint Influence", 0.0, "04 | BLENDER SYNC - ID ROOT DEPTH", 8, -220, -220, "Strength of the blended vertex/texture depth source")
-    depth_blend_mode = scalar(material, "Depth Blend Mode", 2.0, "04 | BLENDER SYNC - ID ROOT DEPTH", 9, -20, -220, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
+    depth_tint = vector(material, "Depth Tint Color", (0.85, 0.85, 0.85, 1), GROUP_SYNC_DEPTH, 1, -420, -220, "Optional depth tint")
+    depth_influence = scalar(material, "Depth Tint Influence", 0.0, GROUP_SYNC_DEPTH, 2, -220, -220, "Strength of the blended vertex/texture depth source; 0 disables the Depth tint stage")
+    depth_blend_mode = scalar(material, "Depth Blend Mode", 2.0, GROUP_SYNC_DEPTH, 3, -20, -220, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
     depth_mask = binary(material, "MaterialExpressionMultiply", depth_driver, depth_influence, 40, -420)
     depth_result = blend_stage(material, id_result, depth_tint, depth_mask, depth_blend_mode, 240, -500)
 
     comment(material, "03 | SYSTEM COLOR\nRFAOS.A selects System Color 01/02; both colors and the blend mode are authored in Blender.", 500, -1900, 1650, 980)
-    system_01 = vector(material, "System Color 01", (0.0, 0.0, 0.0, 1), "03 | BLENDER SYNC - SYSTEM COLOR", 0, 680, -1680, "Color used when RFAOS.A is 0")
-    system_02 = vector(material, "System Color 02", (1.0, 1.0, 1.0, 1), "03 | BLENDER SYNC - SYSTEM COLOR", 1, 680, -1480, "Color used when RFAOS.A is 1")
-    system_influence = scalar(material, "System Color Influence", 0.0, "03 | BLENDER SYNC - SYSTEM COLOR", 2, 680, -1280, "Global strength of the selected System Color")
-    system_contrast = scalar(material, "System Mask Contrast", 1.0, "03 | BLENDER SYNC - SYSTEM COLOR", 3, 680, -1080, "Contrast around the RFAOS.A midpoint")
-    system_bias = scalar(material, "System Mask Bias", 0.0, "03 | BLENDER SYNC - SYSTEM COLOR", 4, 880, -1080, "Bias added to the RFAOS.A mask")
-    system_invert = scalar(material, "System Mask Invert", 0.0, "03 | BLENDER SYNC - SYSTEM COLOR", 5, 1080, -1080, "0 normal, 1 inverted")
-    system_blend_mode = scalar(material, "System Blend Mode", 4.0, "03 | BLENDER SYNC - SYSTEM COLOR", 6, 1280, -1080, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
+    system_01 = vector(material, "System Color 01", (0.0, 0.0, 0.0, 1), GROUP_SYNC_SYSTEM, 0, 680, -1680, "Color used when RFAOS.A is 0")
+    system_02 = vector(material, "System Color 02", (1.0, 1.0, 1.0, 1), GROUP_SYNC_SYSTEM, 1, 680, -1480, "Color used when RFAOS.A is 1")
+    system_influence = scalar(material, "System Color Influence", 0.0, GROUP_SYNC_SYSTEM, 2, 680, -1280, "Global strength of the selected System Color; 0 disables the System stage")
+    system_contrast = scalar(material, "System Mask Contrast", 1.0, GROUP_SYNC_SYSTEM, 3, 680, -1080, "Contrast around the RFAOS.A midpoint")
+    system_bias = scalar(material, "System Mask Bias", 0.0, GROUP_SYNC_SYSTEM, 4, 880, -1080, "Bias added to the RFAOS.A mask")
+    system_invert = scalar(material, "System Mask Invert", 0.0, GROUP_SYNC_SYSTEM, 5, 1080, -1080, "0 normal, 1 inverted")
+    system_blend_mode = scalar(material, "System Blend Mode", 4.0, GROUP_SYNC_SYSTEM, 6, 1280, -1080, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
     half = constant(material, 0.5, 300, -850)
     centered = binary(material, "MaterialExpressionSubtract", rfaos_system, half, 300, -1250)
     contrasted = binary(material, "MaterialExpressionMultiply", centered, system_contrast, 520, -1250)
@@ -714,11 +728,11 @@ def build_master(material):
     system_color_result = blend_stage(material, depth_result, two_system_colors, system_influence, system_blend_mode, 1700, -1100)
 
     comment(material, "05 | SURFACE + FLOW\nORM and RFAOS.B feed Hair BSDF surface values; Flow supplies tangent direction.", 1120, -700, 1850, 1250)
-    ao_strength = scalar(material, "AO Strength", 1.0, "05 | BLENDER SYNC - SURFACE FLOW", 0, 1320, -420, "Strength of the combined vertex and texture AO")
-    ao_vertex_influence = scalar(material, "AO Vertex Influence", 1.0, "05 | BLENDER SYNC - SURFACE FLOW", 1, 1320, -300, "Strength of RFAOS.B vertex AO")
-    ao_texture_influence = scalar(material, "AO Texture Influence", 1.0, "05 | BLENDER SYNC - SURFACE FLOW", 2, 1320, -180, "Strength of ORM.R texture AO")
-    ao_color_influence = scalar(material, "AO Color Influence", 0.0, "05 | BLENDER SYNC - SURFACE FLOW", 3, 1320, -60, "Optional AO contribution to Base Color; AO still feeds the material AO output")
-    ao_blend_mode = scalar(material, "AO Blend Mode", 1.0, "05 | BLENDER SYNC - SURFACE FLOW", 4, 1320, 60, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
+    ao_strength = scalar(material, "AO Strength", 1.0, GROUP_SYNC_AO, 0, 1320, -420, "Strength of the combined vertex and texture AO; 0 disables AO")
+    ao_vertex_influence = scalar(material, "AO Vertex Influence", 1.0, GROUP_SYNC_AO, 1, 1320, -300, "Strength of RFAOS.B vertex AO")
+    ao_texture_influence = scalar(material, "AO Texture Influence", 1.0, GROUP_SYNC_AO, 2, 1320, -180, "Strength of ORM.R texture AO")
+    ao_color_influence = scalar(material, "AO Color Influence", 0.0, GROUP_SYNC_AO, 3, 1320, -60, "Optional AO contribution to Base Color; 0 keeps AO out of color")
+    ao_blend_mode = scalar(material, "AO Blend Mode", 1.0, GROUP_SYNC_AO, 4, 1320, 60, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
     ao_vertex = lerp(material, one, rfaos_ao, ao_vertex_influence, 1540, -420)
     ao_texture = lerp(material, one, orm, ao_texture_influence, 1540, -260, "", "R")
     ao_combined = binary(material, "MaterialExpressionMultiply", ao_vertex, ao_texture, 1760, -320)
@@ -729,17 +743,17 @@ def build_master(material):
     ao_rg = append(material, ao_result, ao_result, 1960, -520)
     ao_rgb = append(material, ao_rg, ao_result, 2140, -520)
     final_color = blend_stage(material, system_color_result, ao_rgb, ao_color_influence, ao_blend_mode, 2320, -920)
-    rough_mult = scalar(material, "Roughness Multiplier", 1.0, "05 | Surface Flow", 5, 1320, 180, "Multiplies ORM.G roughness")
-    rough_min = scalar(material, "Roughness Minimum", 0.08, "02 | BLENDER SYNC - HAIR TOOL", 11, 1520, -100, "Minimum roughness from Blender SpecRoughness")
+    rough_mult = scalar(material, "Roughness Multiplier", 1.0, GROUP_UNREAL_SURFACE, 0, 1320, 180, "Multiplies ORM.G roughness")
+    rough_min = scalar(material, "Roughness Minimum", 0.08, GROUP_SYNC_AO, 5, 1520, -100, "Minimum roughness from Blender SpecRoughness")
     rough_scaled = binary(material, "MaterialExpressionMultiply", orm, rough_mult, 1760, -80, "G")
     roughness = binary(material, "MaterialExpressionMax", rough_scaled, rough_min, 1980, -80)
-    specular_base = scalar(material, "Hair Specular", 0.5, "05 | Surface Flow", 3, 1320, 120, "Base Hair BSDF specular")
-    metallic_to_spec = scalar(material, "ORM Metallic To Specular", 0.0, "05 | Surface Flow", 4, 1520, 120, "Hair BSDF has no metallic input; optionally map ORM.B to Specular")
+    specular_base = scalar(material, "Hair Specular", 0.5, GROUP_UNREAL_SURFACE, 1, 1320, 120, "Base Hair BSDF specular")
+    metallic_to_spec = scalar(material, "ORM Metallic To Specular", 0.0, GROUP_UNREAL_SURFACE, 2, 1520, 120, "Hair BSDF has no metallic input; optionally map ORM.B to Specular")
     specular = lerp(material, specular_base, orm, metallic_to_spec, 1980, 120, "", "B")
-    scatter = scalar(material, "Scatter", 1.0, "05 | Surface Flow", 5, 1320, 320, "Hair BSDF scatter")
-    backlit = scalar(material, "Backlit", 0.0, "05 | Surface Flow", 6, 1520, 320, "Hair BSDF backlight strength")
+    scatter = scalar(material, "Scatter", 1.0, GROUP_UNREAL_SURFACE, 3, 1320, 320, "Hair BSDF scatter")
+    backlit = scalar(material, "Backlit", 0.0, GROUP_UNREAL_SURFACE, 4, 1520, 320, "Hair BSDF backlight strength")
 
-    flow_flip = scalar(material, "Flow Flip Green", 0.0, "05 | Surface Flow", 7, -360, 280, "0 keeps Flow.G, 1 flips it")
+    flow_flip = scalar(material, "Flow Flip Green", 0.0, GROUP_UNREAL_SURFACE, 5, -360, 280, "0 keeps Flow.G, 1 flips it")
     flow_g_inv = unary(material, "MaterialExpressionOneMinus", flow, -140, 400, "G")
     flow_g = lerp(material, flow, flow_g_inv, flow_flip, 80, 360, "G")
     two = constant(material, 2.0, 300, 520)
@@ -771,12 +785,12 @@ def build_master(material):
     connect_property(ao_result, "", "MP_AMBIENT_OCCLUSION")
 
     comment(material, "06 | OPACITY\nRL_Hair-compatible strength, multiplier, power, threshold branch and temporal dither.", -4300, 1220, 3450, 1650)
-    alpha_multiplier = scalar(material, "Alpha Multiplier", 1.5, "07 | Opacity Advanced", 0, -4020, 2320, "RL_Hair alpha pre-multiplier")
-    alpha_power = scalar(material, "Alpha Power", 0.7, "07 | Opacity Advanced", 1, -3820, 2320, "RL_Hair alpha exponent")
-    opacity_multiplier = scalar(material, "Opacity Multiplier", 1.0, "06 | Opacity", 0, -3620, 2320, "RL_Hair opacity multiplier")
-    opacity_strength = scalar(material, "Opacity Strength", 1.0, "06 | Opacity", 1, -3420, 2320, "0 bypasses opacity texture, 1 uses it")
-    opacity_value = scalar(material, "Opacity", 1.0, "06 | Opacity", 2, -3220, 2320, "Global opacity amount")
-    opacity_min = scalar(material, "Increase Opacity Mask Min Value", 0.666, "07 | Opacity Advanced", 2, -3020, 2320, "Threshold selecting the RL_Hair opacity increase branch")
+    alpha_multiplier = scalar(material, "Alpha Multiplier", 1.5, GROUP_UNREAL_OPACITY, 3, -4020, 2320, "RL_Hair alpha pre-multiplier")
+    alpha_power = scalar(material, "Alpha Power", 0.7, GROUP_UNREAL_OPACITY, 4, -3820, 2320, "RL_Hair alpha exponent")
+    opacity_multiplier = scalar(material, "Opacity Multiplier", 1.0, GROUP_UNREAL_OPACITY, 1, -3620, 2320, "RL_Hair opacity multiplier")
+    opacity_strength = scalar(material, "Opacity Strength", 1.0, GROUP_UNREAL_OPACITY, 0, -3420, 2320, "0 bypasses opacity texture, 1 uses it")
+    opacity_value = scalar(material, "Opacity", 1.0, GROUP_UNREAL_OPACITY, 2, -3220, 2320, "Global opacity amount")
+    opacity_min = scalar(material, "Increase Opacity Mask Min Value", 0.666, GROUP_UNREAL_OPACITY, 5, -3020, 2320, "Threshold selecting the RL_Hair opacity increase branch")
     alpha_multiplied = binary(material, "MaterialExpressionMultiply", opacity, alpha_multiplier, -4020, 2020, "R")
     alpha_shaped = power(material, alpha_multiplied, alpha_power, -3800, 2020)
     alpha_adjusted = binary(material, "MaterialExpressionMultiply", alpha_shaped, opacity_multiplier, -3580, 2020)
@@ -801,7 +815,7 @@ def build_master(material):
     connect(opacity_if, "", dither, "Alpha Threshold")
     connect_property(dither, "Result", "MP_OPACITY_MASK")
 
-    pdo_strength = scalar(material, "Pixel Depth Offset", 0.0, "07 | Opacity Advanced", 3, -1900, 2460, "Uses inverse IRD.B depth")
+    pdo_strength = scalar(material, "Pixel Depth Offset", 0.0, GROUP_UNREAL_OPACITY, 6, -1900, 2460, "Uses inverse IRD.B depth")
     depth_inverse = unary(material, "MaterialExpressionOneMinus", ird, -1880, 2260, "B")
     pdo = binary(material, "MaterialExpressionMultiply", depth_inverse, pdo_strength, -1660, 2300)
     set_prop(pdo, "desc", "HT HairCards: Pixel Depth Offset")

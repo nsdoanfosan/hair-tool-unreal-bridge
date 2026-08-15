@@ -3,9 +3,18 @@ import bpy
 from . import schema
 
 
-class HTUE_PT_MaterialBridge(bpy.types.Panel):
-    bl_label = "Hair Tool Unreal Bridge"
-    bl_idname = "HTUE_PT_material_bridge"
+def _settings_layout(layout):
+    layout.use_property_split = True
+    layout.use_property_decorate = False
+    return layout
+
+
+def _properties(layout, settings, names):
+    for name in names:
+        layout.prop(settings, name)
+
+
+class _HTUEPanel:
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "material"
@@ -18,56 +27,151 @@ class HTUE_PT_MaterialBridge(bpy.types.Panel):
             or getattr(material.htue_settings, "initialized", False)
         )
 
+
+class HTUE_PT_MaterialBridge(_HTUEPanel, bpy.types.Panel):
+    bl_label = "Hair Tool Unreal Bridge"
+    bl_idname = "HTUE_PT_material_bridge"
+
+    def draw_header(self, context):
+        settings = context.material.htue_settings
+        self.layout.label(text="", icon="CHECKMARK" if settings.initialized else "UNLINKED")
+
     def draw(self, context):
-        layout = self.layout
+        layout = _settings_layout(self.layout)
         material = context.material
         settings = material.htue_settings
         if not settings.initialized:
-            layout.operator("htue.setup_active_material", icon="NODETREE")
-            layout.operator("htue.setup_four_materials", icon="MATERIAL_DATA")
+            column = layout.column(align=True)
+            column.operator("htue.setup_active_material", icon="NODETREE")
+            column.operator("htue.setup_four_materials", icon="MATERIAL_DATA")
             return
 
-        layout.label(text="Names and values below are identical in Unreal.", icon="LINKED")
-        layout.prop(settings, "texture_set")
-        layout.prop(settings, "texture_root")
-
-        base = layout.box()
-        base.label(text="Base")
-        base.prop(settings, "base_color")
-
-        root = layout.box()
-        root.label(text="Root — RFAOS.G + IRD.G")
-        for prop in ("root_color", "root_mix", "root_range", "root_random_influence", "root_random_brightness", "root_map_influence", "root_blend_mode"):
-            root.prop(settings, prop)
-
-        tip = layout.box()
-        tip.label(text="Tip — RFAOS.G + OneMinus(IRD.G)")
-        for prop in ("tip_color", "tip_mix", "tip_range", "tip_random_influence", "tip_random_brightness", "tip_map_influence", "tip_blend_mode"):
-            tip.prop(settings, prop)
-
-        identity = layout.box()
-        identity.label(text="ID — RFAOS.R + IRD.R")
-        for prop in ("id_map_influence", "id_tint_color", "id_tint_influence", "id_blend_mode"):
-            identity.prop(settings, prop)
-
-        depth = layout.box()
-        depth.label(text="Depth — Depth attribute + IRD.B")
-        for prop in ("depth_map_influence", "depth_tint_color", "depth_tint_influence", "depth_blend_mode"):
-            depth.prop(settings, prop)
-
-        system = layout.box()
-        system.label(text="System Color — SystemColor alpha / RFAOS.A")
-        for prop in ("system_color_01", "system_color_02", "system_color_influence", "system_mask_contrast", "system_mask_bias", "system_mask_invert", "system_blend_mode"):
-            system.prop(settings, prop)
-
-        ao = layout.box()
-        ao.label(text="AO — RFAOS.B + ORM.R")
-        for prop in ("ao_strength", "ao_vertex_influence", "ao_texture_influence", "ao_color_influence", "ao_blend_mode", "roughness_minimum"):
-            ao.prop(settings, prop)
-
+        status = layout.box()
+        status.label(text="Hair Tool inputs stay active", icon="LINKED")
+        status.label(text="Only duplicate legacy color blending is replaced")
+        status.label(text="Unreal contract v2  |  36 synchronized parameters")
         row = layout.row(align=True)
-        row.operator("htue.refresh_contract", icon="FILE_REFRESH")
-        row.operator("htue.restore_active_material", icon="LOOP_BACK")
+        row.operator("htue.refresh_contract", text="Sync Hair Tool + Unreal", icon="FILE_REFRESH")
+        row.operator("htue.restore_active_material", text="Restore", icon="LOOP_BACK")
 
 
-CLASSES = (HTUE_PT_MaterialBridge,)
+class HTUE_PT_Source(_HTUEPanel, bpy.types.Panel):
+    bl_label = "00  Source & Textures"
+    bl_idname = "HTUE_PT_source"
+    bl_parent_id = "HTUE_PT_material_bridge"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = _settings_layout(self.layout)
+        layout.prop(context.material.htue_settings, "texture_set")
+        layout.prop(context.material.htue_settings, "texture_root")
+
+
+class HTUE_PT_Base(_HTUEPanel, bpy.types.Panel):
+    bl_label = "01  Base"
+    bl_idname = "HTUE_PT_base"
+    bl_parent_id = "HTUE_PT_material_bridge"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        _settings_layout(self.layout).prop(context.material.htue_settings, "base_color")
+
+
+class HTUE_PT_Root(_HTUEPanel, bpy.types.Panel):
+    bl_label = "02  Root  |  Set Factor + IRD.G"
+    bl_idname = "HTUE_PT_root"
+    bl_parent_id = "HTUE_PT_material_bridge"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = _settings_layout(self.layout)
+        _properties(layout, context.material.htue_settings, (
+            "root_color", "root_mix", "root_range", "root_random_influence",
+            "root_random_brightness", "root_map_influence", "root_blend_mode",
+        ))
+
+
+class HTUE_PT_Tip(_HTUEPanel, bpy.types.Panel):
+    bl_label = "03  Tip  |  Set Factor + OneMinus(IRD.G)"
+    bl_idname = "HTUE_PT_tip"
+    bl_parent_id = "HTUE_PT_material_bridge"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = _settings_layout(self.layout)
+        _properties(layout, context.material.htue_settings, (
+            "tip_color", "tip_mix", "tip_range", "tip_random_influence",
+            "tip_random_brightness", "tip_map_influence", "tip_blend_mode",
+        ))
+
+
+class HTUE_PT_ID(_HTUEPanel, bpy.types.Panel):
+    bl_label = "04  ID  |  Random + IRD.R"
+    bl_idname = "HTUE_PT_id"
+    bl_parent_id = "HTUE_PT_material_bridge"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = _settings_layout(self.layout)
+        _properties(layout, context.material.htue_settings, (
+            "id_map_influence", "id_tint_color", "id_tint_influence", "id_blend_mode",
+        ))
+
+
+class HTUE_PT_Depth(_HTUEPanel, bpy.types.Panel):
+    bl_label = "05  Depth  |  Hair Tool Depth + IRD.B"
+    bl_idname = "HTUE_PT_depth"
+    bl_parent_id = "HTUE_PT_material_bridge"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = _settings_layout(self.layout)
+        _properties(layout, context.material.htue_settings, (
+            "depth_map_influence", "depth_tint_color", "depth_tint_influence", "depth_blend_mode",
+        ))
+
+
+class HTUE_PT_System(_HTUEPanel, bpy.types.Panel):
+    bl_label = "06  System Color  |  Set System Color"
+    bl_idname = "HTUE_PT_system"
+    bl_parent_id = "HTUE_PT_material_bridge"
+
+    def draw(self, context):
+        layout = _settings_layout(self.layout)
+        settings = context.material.htue_settings
+        info = layout.box()
+        info.label(text="RGB: Hair Tool SystemColor (live)", icon="COLOR")
+        info.label(text="Alpha: 0 = Color 01, 1 = Color 02")
+        layout.operator("htue.pull_deformer_colors", text="Read Set System Color", icon="IMPORT")
+        _properties(layout, settings, (
+            "system_color_01", "system_color_02", "system_color_influence",
+            "system_mask_contrast", "system_mask_bias", "system_mask_invert",
+            "system_blend_mode",
+        ))
+
+
+class HTUE_PT_AO(_HTUEPanel, bpy.types.Panel):
+    bl_label = "07  AO & Roughness  |  Hair Tool AO + ORM.R"
+    bl_idname = "HTUE_PT_ao"
+    bl_parent_id = "HTUE_PT_material_bridge"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = _settings_layout(self.layout)
+        _properties(layout, context.material.htue_settings, (
+            "ao_strength", "ao_vertex_influence", "ao_texture_influence",
+            "ao_color_influence", "ao_blend_mode", "roughness_minimum",
+        ))
+
+
+CLASSES = (
+    HTUE_PT_MaterialBridge,
+    HTUE_PT_Source,
+    HTUE_PT_Base,
+    HTUE_PT_Root,
+    HTUE_PT_Tip,
+    HTUE_PT_ID,
+    HTUE_PT_Depth,
+    HTUE_PT_System,
+    HTUE_PT_AO,
+)

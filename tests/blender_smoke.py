@@ -4,7 +4,11 @@ import bpy
 
 addon_utils.enable("hair_tool_unreal_bridge", default_set=False, persistent=False)
 
+import hair_tool_unreal_bridge as addon
 from hair_tool_unreal_bridge import contract, nodes, schema
+
+
+assert addon.migrate_bridge_ui_on_load in bpy.app.handlers.load_post
 
 
 def input_socket(tree, name, socket_type, default):
@@ -19,6 +23,8 @@ for name, default in (
     ("Tip Color", (0.8, 0.5, 0.3, 1.0)),
     ("Debug Color", (0.0, 0.0, 0.0, 1.0)),
     ("Depth Tint", (0.0, 0.0, 0.0, 1.0)),
+    ("Depth [Map]", (0.0, 0.0, 0.0, 1.0)),
+    ("Vert Color AO [Map]", (1.0, 1.0, 1.0, 1.0)),
 ):
     input_socket(hair_group, name, "NodeSocketColor", default)
 for name, default in (
@@ -34,8 +40,16 @@ for name, default in (
     ("Depth Mix Factor", 0.0),
     ("AO Mix Factor", 0.0),
     ("SpecRoughness", 0.08),
+    ("Factor [Map]", 0.0),
+    ("Random Id [Map]", 0.0),
 ):
     input_socket(hair_group, name, "NodeSocketFloat", default)
+
+group_input = hair_group.nodes.new("NodeGroupInput")
+final_color = hair_group.nodes.new("NodeReroute")
+final_color.name = "Hair Tool Final Color"
+final_color.label = "Color"
+hair_group.links.new(group_input.outputs["Base Color"], final_color.inputs[0])
 
 material = bpy.data.materials.new("M_HT_Default_Material_01")
 material.use_nodes = True
@@ -43,24 +57,77 @@ shader = material.node_tree.nodes.new("ShaderNodeGroup")
 shader.name = "HairShaderMain"
 shader.node_tree = hair_group
 
-bridge = nodes.setup_material(material)
-assert bridge is not None
-assert bridge.inputs.get("System Color 01") is not None
-assert bridge.inputs.get("System Color 02") is not None
-assert shader.inputs["Root Color Mix Factor"].default_value == 0.0
-assert shader.inputs["Tip Color Mix Factor"].default_value == 0.0
+factor = material.node_tree.nodes.new("ShaderNodeAttribute")
+factor.name = "Hair Tool Factor"
+factor.attribute_name = "Factor"
+random = material.node_tree.nodes.new("ShaderNodeAttribute")
+random.name = "Hair Tool Random"
+random.attribute_name = "Random"
+system = material.node_tree.nodes.new("ShaderNodeAttribute")
+system.name = "Hair Tool SystemColor"
+system.attribute_name = "SystemColor"
+ao = material.node_tree.nodes.new("ShaderNodeAttribute")
+ao.name = "Hair Tool AO"
+ao.attribute_name = "AO"
+material.node_tree.links.new(factor.outputs["Factor"], shader.inputs["Factor [Map]"])
+material.node_tree.links.new(random.outputs["Factor"], shader.inputs["Random Id [Map]"])
+material.node_tree.links.new(system.outputs["Color"], shader.inputs["Debug Color"])
+material.node_tree.links.new(ao.outputs["Color"], shader.inputs["Vert Color AO [Map]"])
+
+mesh = bpy.data.meshes.new("HTUE_Deformer_Source")
+mesh.from_pydata([(0, 0, 0), (1, 0, 0)], [], [])
+mesh.materials.append(material)
+system_colors = mesh.attributes.new("SystemColor", "BYTE_COLOR", "POINT")
+system_colors.data[0].color = (0.1, 0.2, 0.3, 0.0)
+system_colors.data[1].color = (0.8, 0.6, 0.4, 1.0)
+expected_system_01 = tuple(system_colors.data[0].color[:3])
+expected_system_02 = tuple(system_colors.data[1].color[:3])
+source_object = bpy.data.objects.new("HTUE_Deformer_Source", mesh)
+bpy.context.scene.collection.objects.link(source_object)
+
+stack = nodes.setup_material(material)
+assert stack is not None
+assert shader.node_tree != hair_group
+assert shader.node_tree.name.startswith(schema.SHADER_CLONE_PREFIX)
+assert hair_group.nodes["Hair Tool Final Color"].inputs[0].links[0].from_node == group_input
+assert shader.inputs["Factor [Map]"].links[0].from_node == factor
+assert shader.inputs["Random Id [Map]"].links[0].from_node == random
+assert shader.inputs["Debug Color"].links[0].from_node == system
+assert shader.inputs["Vert Color AO [Map]"].links[0].from_node == ao
+assert shader.inputs["Root Color Mix Factor"].default_value == 1.0
+assert not shader.inputs["Root Color Mix Factor"].is_linked
+assert stack.inputs["System Attribute Color"].links[0].from_node.bl_idname == "NodeGroupInput"
+assert shader.node_tree.nodes["Hair Tool Final Color"].inputs[0].links[0].from_node == stack
+assert shader.inputs["HTUE System Mask"].links[0].from_node == system
 assert material.htue_settings.initialized
+assert all(abs(a - b) < 1.0e-4 for a, b in zip(material.htue_settings.system_color_01, expected_system_01))
+assert all(abs(a - b) < 1.0e-4 for a, b in zip(material.htue_settings.system_color_02, expected_system_02))
 assert contract.validate_material(material) == []
 
 material.htue_settings.root_blend_mode = "OVERLAY"
-assert bridge.inputs["Root Blend Mode"].default_value == 2.0
-assert bridge.node_tree.nodes.get("HTUE Stage Root") is not None
+assert stack.inputs["Root Blend Mode"].default_value == 2.0
 saved = schema.loads_contract(material[schema.CONTRACT_PROPERTY])
 assert saved["hair_tool"]["scalar_parameters"]["Root Blend Mode"] == 2.0
 
+# A direct Hair Tool input edit is pulled into the shared contract without
+# disabling the original socket or its deformer links.
+shader.inputs["Root Color Mix Factor"].default_value = 0.35
+assert nodes.pull_hair_tool_values(material)
+assert abs(material.htue_settings.root_mix - 0.35) < 1.0e-6
+
+# Re-running setup is the load migration path and must keep native links.
+addon.migrate_bridge_ui_on_load(None)
+shader = material.node_tree.nodes["HairShaderMain"]
+stack = shader.node_tree.nodes[schema.INTERNAL_STACK_NODE_NAME]
+assert shader.inputs["Factor [Map]"].links[0].from_node == factor
+assert shader.inputs["Debug Color"].links[0].from_node == system
+
 nodes.restore_material(material)
 assert not material.htue_settings.initialized
+assert shader.node_tree == hair_group
 assert shader.inputs["Root Color Mix Factor"].default_value == 1.0
-assert material.node_tree.nodes.get(schema.BRIDGE_NODE_NAME) is None
+assert shader.inputs["Factor [Map]"].links[0].from_node == factor
+assert shader.inputs["Debug Color"].links[0].from_node == system
+assert bpy.data.node_groups.get(f"{schema.SHADER_CLONE_PREFIX}::{material.name}") is None
 
 print("HTUE_BLENDER_SMOKE_OK")

@@ -64,6 +64,23 @@ class TestUnrealBuilderContract(unittest.TestCase):
         self.assertIn("sync_parameters = set", self.source)
         self.assertIn("param not in sync_parameters", self.source)
 
+    def test_material_instance_groups_mirror_the_blender_panel(self):
+        expected_groups = (
+            "01 | HTUE SYNC - Textures",
+            "02 | HTUE SYNC - Base",
+            "03 | HTUE SYNC - Root",
+            "04 | HTUE SYNC - Tip",
+            "05 | HTUE SYNC - ID",
+            "06 | HTUE SYNC - Depth",
+            "07 | HTUE SYNC - System Color",
+            "08 | HTUE SYNC - AO & Roughness",
+            "90 | UNREAL ONLY - UV",
+            "91 | UNREAL ONLY - Surface & Flow",
+            "92 | UNREAL ONLY - Opacity",
+        )
+        for group in expected_groups:
+            self.assertIn(group, self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
