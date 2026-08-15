@@ -19,6 +19,7 @@ RESULT_PATH = Path(
         r"C:\UnrealProjects\MyProject2\work\audit_htue_haircards_master_v3.json",
     )
 )
+HANDOFF_JSON = Path(os.environ["HTUE_HANDOFF_JSON"]) if os.environ.get("HTUE_HANDOFF_JSON") else None
 
 
 def first_json(value):
@@ -89,6 +90,18 @@ def constant_value(expression):
         return float(captions[0])
     except (IndexError, TypeError, ValueError):
         return None
+
+
+def linear_color_values(value):
+    return [float(value.r), float(value.g), float(value.b), float(value.a)]
+
+
+def different(actual, expected, tolerance=1.0e-5):
+    if isinstance(expected, (list, tuple)):
+        return len(actual) != len(expected) or any(
+            abs(float(a) - float(b)) > tolerance for a, b in zip(actual, expected)
+        )
+    return abs(float(actual) - float(expected)) > tolerance
 
 
 report = {
@@ -217,6 +230,17 @@ try:
     if missing_scalars:
         report["errors"].append(f"Required synchronized parameters are missing: {missing_scalars}")
 
+    expected_entries = {}
+    if HANDOFF_JSON and HANDOFF_JSON.exists():
+        handoff_payload = json.loads(HANDOFF_JSON.read_text(encoding="utf-8"))
+        if isinstance(handoff_payload, dict):
+            handoff_payload = handoff_payload.get("handoff") or []
+        expected_entries = {
+            f"/Game/Material/HairTool/MI/{entry['material_instance_name']}": entry
+            for entry in handoff_payload
+            if str(entry.get("name", "")).startswith("M_HT_")
+        }
+
     for path in INSTANCES:
         instance = unreal.EditorAssetLibrary.load_asset(path)
         if instance is None:
@@ -224,7 +248,7 @@ try:
             continue
         parent = instance.get_editor_property("parent")
         parent_path = parent.get_path_name() if parent else None
-        report["instances"][path] = {
+        instance_report = {
             "parent": parent_path,
             "system_color_influence": float(
                 unreal.MaterialEditingLibrary.get_material_instance_scalar_parameter_value(
@@ -236,10 +260,49 @@ try:
                     instance, "System Blend Mode"
                 )
             ),
+            "synchronized_parameter_count": 0,
+            "parameter_mismatches": [],
         }
+        report["instances"][path] = instance_report
         parent_package = parent_path.split(".", 1)[0] if parent_path else None
         if parent_package != MASTER:
             report["errors"].append(f"Wrong parent for {path}: {parent_path}")
+
+        expected_entry = expected_entries.get(path)
+        if expected_entry:
+            hair_tool = expected_entry.get("hair_tool") or {}
+            synchronized = set(hair_tool.get("sync_parameters") or [])
+            for parameter, expected in (hair_tool.get("scalar_parameters") or {}).items():
+                if parameter not in synchronized:
+                    continue
+                actual = float(
+                    unreal.MaterialEditingLibrary.get_material_instance_scalar_parameter_value(
+                        instance, parameter
+                    )
+                )
+                instance_report["synchronized_parameter_count"] += 1
+                if different(actual, expected):
+                    instance_report["parameter_mismatches"].append(
+                        {"parameter": parameter, "expected": expected, "actual": actual}
+                    )
+            for parameter, expected in (hair_tool.get("vector_parameters") or {}).items():
+                if parameter not in synchronized:
+                    continue
+                actual = linear_color_values(
+                    unreal.MaterialEditingLibrary.get_material_instance_vector_parameter_value(
+                        instance, parameter
+                    )
+                )
+                instance_report["synchronized_parameter_count"] += 1
+                if different(actual, expected):
+                    instance_report["parameter_mismatches"].append(
+                        {"parameter": parameter, "expected": expected, "actual": actual}
+                    )
+            if instance_report["parameter_mismatches"]:
+                report["errors"].append(
+                    f"Synchronized parameter mismatch for {path}: "
+                    f"{instance_report['parameter_mismatches']}"
+                )
 except Exception as exc:
     report["errors"].append(f"{exc}\n{traceback.format_exc()}")
 

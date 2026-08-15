@@ -29,21 +29,33 @@ def has_source_attribute(material, attribute_name):
     return False
 
 
-def has_ao_source(material):
-    """Detect authored AO or Hair Tool's opt-in HT_Mesh_AO generator."""
+def has_evaluated_source_attribute(material, attribute_name):
+    """Report an attribute only when Hair Tool actually outputs it to the viewport."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
     for obj in bpy.data.objects:
         if not _uses_material(obj, material):
             continue
-        attributes = getattr(getattr(obj, "data", None), "attributes", None)
-        if attributes and attributes.get("AO") is not None:
+        evaluated = obj.evaluated_get(depsgraph)
+        attributes = getattr(getattr(evaluated, "data", None), "attributes", None)
+        if attributes and attributes.get(attribute_name) is not None:
             return True
-        for modifier in getattr(obj, "modifiers", ()):
-            node_group_name = getattr(getattr(modifier, "node_group", None), "name", "")
-            if "HT_Mesh_AO" in node_group_name:
+        temporary_mesh = None
+        try:
+            temporary_mesh = evaluated.to_mesh(
+                preserve_all_data_layers=True,
+                depsgraph=depsgraph,
+            )
+            evaluated_attributes = getattr(temporary_mesh, "attributes", None)
+            if evaluated_attributes and evaluated_attributes.get(attribute_name) is not None:
                 return True
-            try:
-                if any(value == "AO" for value in modifier.values() if isinstance(value, str)):
-                    return True
-            except (AttributeError, TypeError):
-                pass
+        except RuntimeError:
+            pass
+        finally:
+            if temporary_mesh is not None:
+                evaluated.to_mesh_clear()
     return False
+
+
+def has_ao_source(material):
+    """Backward-compatible alias for callers outside the bridge."""
+    return has_evaluated_source_attribute(material, "AO")
