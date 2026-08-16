@@ -213,8 +213,8 @@ assert shader.inputs["Debug Color"].links[0].from_node == system
 assert normal_node.inputs["Flip Backface Normal"].default_value == 0.5
 assert bpy.data.node_groups.get(f"{schema.SHADER_CLONE_PREFIX}::{material.name}") is None
 
-# Selected-only Export assignment stores a grouping override without changing
-# parenting, transforms, or the object's existing collection membership.
+# Selected-only Export linking moves the intact Hair Tool hierarchy under the
+# chosen Empty, preserves world transforms, and directly links only the output.
 setup_geo = bpy.data.node_groups.new("Hair_System_Setup_UI_SMOKE", "GeometryNodeTree")
 profile_geo = bpy.data.node_groups.new("Hair_System_Profile_UI_SMOKE", "GeometryNodeTree")
 setup_modifier = source_object.modifiers.new("Hair_System_Setup", "NODES")
@@ -227,12 +227,26 @@ empty_a = bpy.data.objects.new("Hair_A_SMOKE", None)
 empty_b = bpy.data.objects.new("Hair_B_SMOKE", None)
 export_collection.objects.link(empty_a)
 export_collection.objects.link(empty_b)
-world_before_parent = source_object.matrix_world.copy()
-source_object.parent = empty_a
-source_object.matrix_world = world_before_parent
-ao_geo = bpy.data.node_groups.new("HT_Mesh_AO_UI_SMOKE", "GeometryNodeTree")
+system_root_mesh = bpy.data.meshes.new("HTUE_System_Root_SMOKE")
+system_root = bpy.data.objects.new("HTUE_System_Root_SMOKE", system_root_mesh)
+system_guide_mesh = bpy.data.meshes.new("HTUE_System_Guide_SMOKE")
+system_guide = bpy.data.objects.new("HTUE_System_Guide_SMOKE", system_guide_mesh)
+bpy.context.scene.collection.objects.link(system_root)
+bpy.context.scene.collection.objects.link(system_guide)
+guide_setup_modifier = system_guide.modifiers.new("Hair_System_Setup", "NODES")
+guide_setup_modifier.node_group = setup_geo
+guide_setup_modifier["Input_3"] = system_root
+setup_modifier["Input_3"] = system_guide
+source_world = source_object.matrix_world.copy()
+system_root.parent = empty_a
+system_guide.parent = system_root
+source_object.parent = system_guide
+source_object.matrix_world = source_world
+ao_geo = bpy.data.node_groups.new("HT_Mesh_AO", "GeometryNodeTree")
 ao_modifier = source_object.modifiers.new("HT_Mesh_AO", "NODES")
 ao_modifier.node_group = ao_geo
+ao_modifier["Input_3"] = 13
+ao_modifier["Input_8"] = "invalid"
 empty_a.hide_render = True
 empty_a.hide_set(True)
 bpy.ops.object.select_all(action="DESELECT")
@@ -240,6 +254,8 @@ source_object.select_set(True)
 bpy.context.view_layer.objects.active = source_object
 original_parent = source_object.parent
 original_matrix = source_object.matrix_world.copy()
+original_root_parent = system_root.parent
+original_root_matrix = system_root.matrix_world.copy()
 original_collections = {collection.name for collection in source_object.users_collection}
 assert [item[0] for item in operators._export_empty_items(None, bpy.context)] == [
     "Hair_A_SMOKE",
@@ -247,6 +263,53 @@ assert [item[0] for item in operators._export_empty_items(None, bpy.context)] ==
 ]
 empty_a.hide_set(False)
 empty_a.hide_render = False
+export_collection.objects.link(source_object)
+source_object[deformer_sync.EXPORT_TARGET_PROPERTY] = empty_b
+assert not empty_b.htue_ao_settings.initialized
+assert deformer_sync.ao_bake_configuration(empty_b)["samples"] == 13
+assert not empty_b.htue_ao_settings.initialized
+del source_object[deformer_sync.EXPORT_TARGET_PROPERTY]
+export_collection.objects.unlink(source_object)
+
+# A failed AO seed rolls back the link, target, hierarchy, and AO settings.
+try:
+    failed_result = bpy.ops.htue.assign_selected_to_export(target_empty=empty_b.name)
+except RuntimeError as exc:
+    assert "Export collection link was not changed" in str(exc)
+else:
+    assert failed_result == {"CANCELLED"}
+assert export_collection not in source_object.users_collection
+assert deformer_sync.EXPORT_TARGET_PROPERTY not in source_object
+assert deformer_sync.EXPORT_LINK_ADDED_PROPERTY not in source_object
+assert system_root.parent == original_root_parent
+assert system_root.matrix_world == original_root_matrix
+assert not empty_b.htue_ao_settings.initialized
+assert empty_b.htue_ao_settings.samples == 8
+assert empty_b.htue_ao_settings.blur_steps == 1
+assert not deformer_sync.ao_settings_initializing(empty_b)
+ao_modifier["Input_8"] = 3
+
+# An existing direct link is initialized during the non-draw load migration.
+export_collection.objects.link(source_object)
+source_object[deformer_sync.EXPORT_TARGET_PROPERTY] = empty_a
+assert not empty_a.htue_ao_settings.initialized
+addon.migrate_bridge_ui_on_load(None)
+assert empty_a.htue_ao_settings.initialized
+assert empty_a.htue_ao_settings.samples == 13
+assert empty_a.htue_ao_settings.blur_steps == 3
+del source_object[deformer_sync.EXPORT_TARGET_PROPERTY]
+export_collection.objects.unlink(source_object)
+
+# Seed B from the native Hair Tool modifier, then remove that modifier to model
+# the selected backup output that needs live AO added by the Bridge.
+export_collection.objects.link(source_object)
+source_object[deformer_sync.EXPORT_TARGET_PROPERTY] = empty_b
+deformer_sync.initialize_ao_bake_settings(empty_b)
+del source_object[deformer_sync.EXPORT_TARGET_PROPERTY]
+export_collection.objects.unlink(source_object)
+source_object.modifiers.remove(ao_modifier)
+assert not deformer_sync.has_ao_modifier(source_object)
+
 assert bpy.ops.htue.assign_selected_to_export(target_empty=empty_b.name) == {"FINISHED"}
 assert export_collection in source_object.users_collection
 assert source_object[deformer_sync.EXPORT_TARGET_PROPERTY] == empty_b
@@ -254,7 +317,58 @@ assert source_object[deformer_sync.EXPORT_LINK_ADDED_PROPERTY] is True
 assert deformer_sync.assigned_export_target(source_object) == empty_b
 assert deformer_sync._find_export_root(source_object) == empty_b
 assert deformer_sync._first_ao_modifier(empty_a) is None
-assert deformer_sync._first_ao_modifier(empty_b) == ao_modifier
+bridge_ao_modifiers = deformer_sync.ao_modifiers(source_object)
+assert len(bridge_ao_modifiers) == 1
+bridge_ao_modifier = bridge_ao_modifiers[0]
+assert bool(bridge_ao_modifier.get(deformer_sync.BRIDGE_AO_MODIFIER_PROPERTY))
+assert deformer_sync._first_ao_modifier(empty_b) == bridge_ao_modifier
+assert empty_b.htue_ao_settings.initialized
+assert empty_b.htue_ao_settings.samples == 13
+assert empty_b.htue_ao_settings.blur_steps == 3
+assert bridge_ao_modifier["Input_3"] == 13
+assert bridge_ao_modifier["Input_8"] == 3
+assert bridge_ao_modifier["Input_7"] == "AO"
+assert bridge_ao_modifier["Input_16"] is True
+# Ownership survives a user-facing node-group rename and cannot create a
+# duplicate fallback on the next synchronization.
+original_ao_group_name = ao_geo.name
+ao_geo.name = "User Renamed AO Group"
+assert deformer_sync.bridge_ao_modifiers(source_object) == [bridge_ao_modifier]
+assert deformer_sync.ao_modifiers(source_object) == [bridge_ao_modifier]
+assert deformer_sync.ensure_per_system_ao_modifier(source_object, empty_b) is None
+assert deformer_sync.bridge_ao_modifiers(source_object) == [bridge_ao_modifier]
+ao_geo.name = original_ao_group_name
+empty_b.htue_ao_settings.samples = 17
+assert bridge_ao_modifier["Input_3"] == 17
+empty_b.htue_ao_settings.evaluation_mode = "COMBINED"
+assert not bridge_ao_modifier.show_viewport
+assert not bridge_ao_modifier.show_render
+empty_b.htue_ao_settings.evaluation_mode = "PER_SYSTEM"
+assert bridge_ao_modifier.show_viewport
+assert bridge_ao_modifier.show_render
+
+# Relinking a Bridge AO output directly into a Combined target disables only
+# the Bridge-owned live modifier; relinking to Per System enables it again.
+empty_combined = bpy.data.objects.new("Hair_Combined_SMOKE", None)
+export_collection.objects.link(empty_combined)
+empty_combined.htue_ao_settings.evaluation_mode = "COMBINED"
+assert bpy.ops.htue.assign_selected_to_export(
+    target_empty=empty_combined.name
+) == {"FINISHED"}
+assert system_root.parent == empty_combined
+assert not bridge_ao_modifier.show_viewport
+assert not bridge_ao_modifier.show_render
+assert bpy.ops.htue.assign_selected_to_export(target_empty=empty_b.name) == {"FINISHED"}
+assert system_root.parent == empty_b
+assert bridge_ao_modifier.show_viewport
+assert bridge_ao_modifier.show_render
+bpy.data.objects.remove(empty_combined, do_unlink=True)
+assert system_root.parent == empty_b
+assert system_root.matrix_world == original_root_matrix
+assert source_object.parent == original_parent
+assert source_object.matrix_world == original_matrix
+assert export_collection not in system_root.users_collection
+assert export_collection not in system_guide.users_collection
 
 
 class FakeHairToolExport:
@@ -275,9 +389,64 @@ assert bpy.ops.htue.remove_selected_from_export() == {"FINISHED"}
 assert export_collection not in source_object.users_collection
 assert deformer_sync.EXPORT_TARGET_PROPERTY not in source_object
 assert deformer_sync.EXPORT_LINK_ADDED_PROPERTY not in source_object
+assert not deformer_sync.has_ao_modifier(source_object)
 assert source_object.parent == original_parent
 assert source_object.matrix_world == original_matrix
+assert system_root.parent == original_root_parent
+assert system_root.matrix_world == original_root_matrix
 assert {collection.name for collection in source_object.users_collection} == original_collections
+
+# A missing AO node group after target initialization also rolls back the
+# target settings, Export link, and hierarchy as one transaction.
+empty_c = bpy.data.objects.new("Hair_C_SMOKE", None)
+export_collection.objects.link(empty_c)
+original_ao_group_getter = deformer_sync._hair_tool_ao_node_group
+
+
+def missing_ao_group():
+    raise RuntimeError("missing AO group")
+
+
+deformer_sync._hair_tool_ao_node_group = missing_ao_group
+try:
+    try:
+        failed_result = bpy.ops.htue.assign_selected_to_export(
+            target_empty=empty_c.name
+        )
+    except RuntimeError as exc:
+        assert "Export collection link was not changed" in str(exc)
+    else:
+        assert failed_result == {"CANCELLED"}
+finally:
+    deformer_sync._hair_tool_ao_node_group = original_ao_group_getter
+assert not empty_c.htue_ao_settings.initialized
+assert export_collection not in source_object.users_collection
+assert deformer_sync.EXPORT_TARGET_PROPERTY not in source_object
+assert system_root.parent == original_root_parent
+bpy.data.objects.remove(empty_c, do_unlink=True)
+
+# A native Hair Tool AO modifier is never overwritten or removed, and an
+# unrelated non-NODES modifier cannot break unlink cleanup.
+native_ao_modifier = source_object.modifiers.new("HT_Mesh_AO_Native", "NODES")
+native_ao_modifier.node_group = ao_geo
+native_ao_modifier["Input_3"] = 5
+native_ao_modifier["Input_7"] = "NativeAO"
+native_ao_modifier["Input_16"] = False
+native_ao_modifier.show_viewport = False
+native_ao_modifier.show_render = False
+armature_modifier = source_object.modifiers.new("Armature_SMOKE", "ARMATURE")
+assert bpy.ops.htue.assign_selected_to_export(target_empty=empty_b.name) == {"FINISHED"}
+assert native_ao_modifier["Input_3"] == 5
+assert native_ao_modifier["Input_7"] == "NativeAO"
+assert native_ao_modifier["Input_16"] is False
+assert not native_ao_modifier.show_viewport
+assert not native_ao_modifier.show_render
+assert bpy.ops.htue.remove_selected_from_export() == {"FINISHED"}
+assert native_ao_modifier in source_object.modifiers[:]
+assert armature_modifier in source_object.modifiers[:]
+assert native_ao_modifier["Input_3"] == 5
+source_object.modifiers.remove(native_ao_modifier)
+source_object.modifiers.remove(armature_modifier)
 
 # A pre-existing manual Export link is preserved while its explicit Bridge
 # assignment is cleared.

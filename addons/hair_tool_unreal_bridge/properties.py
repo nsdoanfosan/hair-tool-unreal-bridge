@@ -65,6 +65,11 @@ def _update_ao_bake_setting(self, _context):
         return
     from . import deformer_sync
 
+    initializing = deformer_sync.ao_settings_initializing(root)
+    if not initializing:
+        if not self.initialized:
+            self.initialized = True
+        deformer_sync.sync_per_system_ao_modifiers(root)
     for preview in deformer_sync._preview_objects(root):
         preview["_htue_combined_ao_preview_stale"] = True
 

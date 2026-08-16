@@ -10,6 +10,10 @@ PREVIEW_COLLECTION_NAME = "HTUE Combined AO Preview"
 DEFAULT_EXPORT_COLLECTION_NAME = "Export"
 EXPORT_TARGET_PROPERTY = "_htue_export_target"
 EXPORT_LINK_ADDED_PROPERTY = "_htue_export_link_added"
+EXPORT_HIERARCHY_MOVED_PROPERTY = "_htue_export_hierarchy_moved"
+EXPORT_ORIGINAL_PARENT_PROPERTY = "_htue_export_original_parent"
+BRIDGE_AO_MODIFIER_PROPERTY = "_htue_bridge_ao_modifier"
+_AO_INITIALIZATION_ROOTS = set()
 AO_MODIFIER_FIELDS = {
     "samples": ("Input_3", 8),
     "base_color_value": ("Input_13", 0.0),
@@ -120,13 +124,180 @@ def export_target(obj):
     return inherited_export_target(obj)
 
 
+def hair_system_hierarchy_root(obj):
+    """Return the top Hair Tool object below its asset Empty."""
+    current = obj
+    while current is not None and current.parent is not None:
+        if current.parent.type == "EMPTY":
+            break
+        parent = current.parent
+        setup_references_parent = any(
+            modifier.type == "NODES"
+            and modifier.node_group is not None
+            and modifier.node_group.name.startswith("Hair_System_Setup")
+            and any(modifier.get(key) == parent for key in modifier.keys())
+            for modifier in current.modifiers
+        )
+        if not setup_references_parent:
+            break
+        current = parent
+    return current
+
+
+def move_hair_system_under_empty(obj, target):
+    """Move a complete Hair Tool hierarchy while preserving its world transform."""
+    root = hair_system_hierarchy_root(obj)
+    if root is None:
+        raise RuntimeError(f"{obj.name}: Hair Tool hierarchy root is unavailable")
+    if target == root or target in root.children_recursive:
+        raise RuntimeError(f"{obj.name}: the chosen Empty would create a parent cycle")
+    if root.parent == target:
+        return root
+
+    if not bool(root.get(EXPORT_HIERARCHY_MOVED_PROPERTY)):
+        if root.parent is not None:
+            root[EXPORT_ORIGINAL_PARENT_PROPERTY] = root.parent
+        root[EXPORT_HIERARCHY_MOVED_PROPERTY] = True
+    world_matrix = root.matrix_world.copy()
+    root.parent = target
+    root.matrix_world = world_matrix
+    return root
+
+
+def restore_hair_system_hierarchy(root):
+    """Restore a hierarchy moved by :func:`move_hair_system_under_empty`."""
+    if root is None or not bool(root.get(EXPORT_HIERARCHY_MOVED_PROPERTY)):
+        return False
+    original_parent = root.get(EXPORT_ORIGINAL_PARENT_PROPERTY)
+    if not isinstance(original_parent, bpy.types.Object):
+        original_parent = None
+    world_matrix = root.matrix_world.copy()
+    root.parent = original_parent
+    root.matrix_world = world_matrix
+    if EXPORT_ORIGINAL_PARENT_PROPERTY in root:
+        del root[EXPORT_ORIGINAL_PARENT_PROPERTY]
+    if EXPORT_HIERARCHY_MOVED_PROPERTY in root:
+        del root[EXPORT_HIERARCHY_MOVED_PROPERTY]
+    return True
+
+
 def has_ao_modifier(obj):
-    return any(
-        modifier.type == "NODES"
-        and modifier.node_group is not None
-        and modifier.node_group.name.startswith("HT_Mesh_AO")
+    return bool(ao_modifiers(obj))
+
+
+def ao_modifiers(obj):
+    return [
+        modifier
         for modifier in obj.modifiers
-    )
+        if modifier.type == "NODES"
+        and (
+            bool(modifier.get(BRIDGE_AO_MODIFIER_PROPERTY))
+            or (
+                modifier.node_group is not None
+                and modifier.node_group.name.startswith("HT_Mesh_AO")
+            )
+        )
+    ]
+
+
+def bridge_ao_modifiers(obj):
+    """Return AO modifiers created by this bridge, independent of group renames."""
+    return [
+        modifier
+        for modifier in obj.modifiers
+        if modifier.type == "NODES"
+        and bool(modifier.get(BRIDGE_AO_MODIFIER_PROPERTY))
+    ]
+
+
+def _hair_tool_ao_node_group():
+    node_group = bpy.data.node_groups.get("HT_Mesh_AO")
+    if node_group is not None:
+        return node_group
+    try:
+        from hair_tool.hair_mesh_helpers import get_node_group
+
+        node_group = get_node_group("HT_Mesh_AO", False)
+    except (ImportError, AttributeError, RuntimeError):
+        node_group = None
+    if node_group is None:
+        raise RuntimeError(
+            'Hair Tool node group "HT_Mesh_AO" is unavailable; '
+            "use Hair Tool > Generate AO (mod) once and relink"
+        )
+    return node_group
+
+
+def _apply_ao_settings_to_modifier(modifier, settings):
+    for field, (identifier, _fallback) in AO_MODIFIER_FIELDS.items():
+        modifier[identifier] = getattr(settings, field)
+    modifier["Input_7"] = "AO"
+    modifier["Input_16"] = True
+    modifier.show_viewport = True
+    modifier.show_render = True
+
+
+def ensure_per_system_ao_modifier(obj, root):
+    """Ensure an assigned output has live Hair Tool AO in Per System mode."""
+    settings = root.htue_ao_settings
+    modifiers = ao_modifiers(obj)
+    bridge_modifiers = bridge_ao_modifiers(obj)
+    if settings.evaluation_mode != "PER_SYSTEM":
+        for modifier in bridge_modifiers:
+            modifier.show_viewport = False
+            modifier.show_render = False
+        return None
+    if bridge_modifiers:
+        for modifier in bridge_modifiers:
+            _apply_ao_settings_to_modifier(modifier, settings)
+        return None
+    if modifiers:
+        return None
+
+    modifier = obj.modifiers.new(name="HT_Mesh_AO", type="NODES")
+    try:
+        modifier.node_group = _hair_tool_ao_node_group()
+        modifier[BRIDGE_AO_MODIFIER_PROPERTY] = True
+        _apply_ao_settings_to_modifier(modifier, settings)
+    except Exception:
+        obj.modifiers.remove(modifier)
+        raise
+    return modifier
+
+
+def sync_per_system_ao_modifiers(root):
+    """Push one export Empty's AO controls to its live Hair Tool outputs."""
+    settings = root.htue_ao_settings
+    collection = export_collection()
+    if collection is None:
+        return []
+    synchronized = []
+    for obj in collection.objects:
+        if (
+            not is_hair_tool_output(obj)
+            or export_target(obj) != root
+            or EXPORT_TARGET_PROPERTY not in obj
+        ):
+            continue
+        if settings.evaluation_mode != "PER_SYSTEM":
+            for modifier in bridge_ao_modifiers(obj):
+                modifier.show_viewport = False
+                modifier.show_render = False
+            synchronized.append(obj)
+            continue
+        ensure_per_system_ao_modifier(obj, root)
+        synchronized.append(obj)
+    if synchronized and bpy.context.view_layer is not None:
+        bpy.context.view_layer.update()
+    return synchronized
+
+
+def remove_bridge_ao_modifiers(obj):
+    removed = 0
+    for modifier in bridge_ao_modifiers(obj):
+        obj.modifiers.remove(modifier)
+        removed += 1
+    return removed
 
 
 def _same_material(candidate, material):
@@ -225,16 +396,14 @@ def _first_ao_modifier(root):
     return None
 
 
-def ao_bake_configuration(root):
+def ao_settings_initializing(root):
+    return root.as_pointer() in _AO_INITIALIZATION_ROOTS
+
+
+def ao_bake_settings_state(root):
     settings = root.htue_ao_settings
-    if not settings.initialized:
-        modifier = _first_ao_modifier(root)
-        if modifier is not None:
-            for field, (identifier, fallback) in AO_MODIFIER_FIELDS.items():
-                value = modifier.get(identifier, fallback)
-                setattr(settings, field, value)
-        settings.initialized = True
     return {
+        "initialized": bool(settings.initialized),
         "evaluation_mode": settings.evaluation_mode,
         "combined_max_ray_distance": settings.combined_max_ray_distance,
         **{
@@ -242,6 +411,87 @@ def ao_bake_configuration(root):
             for field in AO_MODIFIER_FIELDS
         },
     }
+
+
+def restore_ao_bake_settings(root, state):
+    settings = root.htue_ao_settings
+    pointer = root.as_pointer()
+    _AO_INITIALIZATION_ROOTS.add(pointer)
+    try:
+        settings.evaluation_mode = state["evaluation_mode"]
+        settings.combined_max_ray_distance = state["combined_max_ray_distance"]
+        for field in AO_MODIFIER_FIELDS:
+            setattr(settings, field, state[field])
+        settings.initialized = state["initialized"]
+    finally:
+        _AO_INITIALIZATION_ROOTS.discard(pointer)
+
+
+def initialize_ao_bake_settings(root):
+    """Seed persistent AO settings outside Blender UI draw callbacks."""
+    settings = root.htue_ao_settings
+    if settings.initialized:
+        return settings
+    modifier = _first_ao_modifier(root)
+    values = {
+        field: modifier.get(identifier, fallback) if modifier is not None else fallback
+        for field, (identifier, fallback) in AO_MODIFIER_FIELDS.items()
+    }
+    original = {
+        field: getattr(settings, field)
+        for field in AO_MODIFIER_FIELDS
+    }
+    pointer = root.as_pointer()
+    _AO_INITIALIZATION_ROOTS.add(pointer)
+    try:
+        for field, value in values.items():
+            setattr(settings, field, value)
+        settings.initialized = True
+    except Exception:
+        for field, value in original.items():
+            setattr(settings, field, value)
+        settings.initialized = False
+        raise
+    finally:
+        _AO_INITIALIZATION_ROOTS.discard(pointer)
+    return settings
+
+
+def initialize_existing_export_ao_settings():
+    """Initialize already-linked export roots from Hair Tool AO modifiers."""
+    initialized = []
+    for root in export_empties():
+        settings = getattr(root, "htue_ao_settings", None)
+        if settings is None or settings.initialized or _first_ao_modifier(root) is None:
+            continue
+        try:
+            initialize_ao_bake_settings(root)
+        except Exception as exc:
+            print(f"HTUE AO initialization skipped for {root.name}: {exc}")
+        else:
+            initialized.append(root)
+    return initialized
+
+
+def ao_bake_configuration(root):
+    """Return the effective AO configuration without mutating Blender data."""
+    settings = root.htue_ao_settings
+    configuration = {
+        "evaluation_mode": settings.evaluation_mode,
+        "combined_max_ray_distance": settings.combined_max_ray_distance,
+        **{
+            field: getattr(settings, field)
+            for field in AO_MODIFIER_FIELDS
+        },
+    }
+    if settings.initialized:
+        return configuration
+
+    modifier = _first_ao_modifier(root)
+    if modifier is not None:
+        for field, (identifier, fallback) in AO_MODIFIER_FIELDS.items():
+            configuration[field] = modifier.get(identifier, fallback)
+    return configuration
 
 
 def _preview_objects(root=None):

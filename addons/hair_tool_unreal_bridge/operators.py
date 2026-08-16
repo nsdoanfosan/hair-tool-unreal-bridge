@@ -29,12 +29,25 @@ def _export_empty_items(_self, _context):
     return _EXPORT_EMPTY_ITEM_CACHE
 
 
+def _custom_property_state(obj, key):
+    return (key in obj, obj.get(key))
+
+
+def _restore_custom_property(obj, key, state):
+    existed, value = state
+    if existed:
+        obj[key] = value
+    elif key in obj:
+        del obj[key]
+
+
 class HTUE_OT_AssignSelectedToExport(bpy.types.Operator):
     bl_idname = "htue.assign_selected_to_export"
     bl_label = "Link Selected Hair to Export Collection"
     bl_description = (
-        "Link only the selected render-enabled Hair Tool outputs to the Export "
-        "collection and choose their asset Empty; this does not run Send to Unreal"
+        "Place each selected Hair Tool hierarchy under the chosen Empty and link "
+        "only its selected render output to the Export collection; this does not "
+        "run Send to Unreal"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -84,8 +97,8 @@ class HTUE_OT_AssignSelectedToExport(bpy.types.Operator):
         if len(selected) > 3:
             layout.label(text=f"+ {len(selected) - 3} more")
         layout.prop(self, "target_empty")
-        layout.label(text="Adds an Export collection link only", icon="LINKED")
-        layout.label(text="Parents, transforms, and existing collections stay unchanged")
+        layout.label(text="Keeps each Hair Tool parent chain together", icon="LINKED")
+        layout.label(text="Only selected outputs join Export; world transforms stay unchanged")
 
     def execute(self, context):
         collection = deformer_sync.export_collection()
@@ -94,18 +107,143 @@ class HTUE_OT_AssignSelectedToExport(bpy.types.Operator):
         if collection is None or target not in valid_targets:
             self.report({"ERROR"}, "The chosen Export Empty is no longer available")
             return {"CANCELLED"}
+        if not target.is_editable:
+            self.report({"ERROR"}, f"{target.name} is not editable")
+            return {"CANCELLED"}
         selected = deformer_sync.selected_hair_tool_outputs(context)
         if not selected:
             self.report({"ERROR"}, "No render-enabled Hair Tool outputs are selected")
             return {"CANCELLED"}
-        for obj in selected:
-            if collection not in obj.users_collection:
-                collection.objects.link(obj)
-                obj[deformer_sync.EXPORT_LINK_ADDED_PROPERTY] = True
-            obj[deformer_sync.EXPORT_TARGET_PROPERTY] = target
+
+        roots = {deformer_sync.hair_system_hierarchy_root(obj) for obj in selected}
+        if any(obj is None or not obj.is_editable for obj in (*selected, *roots)):
+            self.report({"ERROR"}, "The selected Hair Tool hierarchy is not editable")
+            return {"CANCELLED"}
+        selected_set = set(selected)
+        conflicts = []
+        for other in collection.objects:
+            if (
+                other in selected_set
+                or not deformer_sync.is_hair_tool_output(other)
+                or other.hide_render
+                or not other.visible_get(view_layer=context.view_layer)
+                or deformer_sync.hair_system_hierarchy_root(other) not in roots
+                or deformer_sync.export_target(other) == target
+            ):
+                continue
+            conflicts.append(other.name)
+        if conflicts:
+            self.report(
+                {"ERROR"},
+                "Select all active outputs in the same Hair Tool hierarchy: "
+                + ", ".join(conflicts[:3]),
+            )
+            return {"CANCELLED"}
+
+        object_states = {
+            obj: {
+                "linked": collection in obj.users_collection,
+                "target": _custom_property_state(
+                    obj, deformer_sync.EXPORT_TARGET_PROPERTY
+                ),
+                "link_marker": _custom_property_state(
+                    obj, deformer_sync.EXPORT_LINK_ADDED_PROPERTY
+                ),
+            }
+            for obj in selected
+        }
+        root_states = {
+            root: {
+                "parent": root.parent,
+                "matrix_world": root.matrix_world.copy(),
+                "moved": _custom_property_state(
+                    root, deformer_sync.EXPORT_HIERARCHY_MOVED_PROPERTY
+                ),
+                "original_parent": _custom_property_state(
+                    root, deformer_sync.EXPORT_ORIGINAL_PARENT_PROPERTY
+                ),
+            }
+            for root in roots
+        }
+        ao_modifier_states = [
+            (
+                obj,
+                modifier,
+                {
+                    "show_viewport": modifier.show_viewport,
+                    "show_render": modifier.show_render,
+                    "values": {
+                        identifier: _custom_property_state(modifier, identifier)
+                        for identifier in (
+                            *(
+                                value[0]
+                                for value in deformer_sync.AO_MODIFIER_FIELDS.values()
+                            ),
+                            "Input_7",
+                            "Input_16",
+                        )
+                    },
+                },
+            )
+            for obj in selected
+            for modifier in deformer_sync.ao_modifiers(obj)
+        ]
+        target_ao_state = deformer_sync.ao_bake_settings_state(target)
+        created_ao_modifiers = []
+        try:
+            for obj in selected:
+                if collection not in obj.users_collection:
+                    collection.objects.link(obj)
+                    obj[deformer_sync.EXPORT_LINK_ADDED_PROPERTY] = True
+                obj[deformer_sync.EXPORT_TARGET_PROPERTY] = target
+            for obj in selected:
+                deformer_sync.move_hair_system_under_empty(obj, target)
+            deformer_sync.initialize_ao_bake_settings(target)
+            for obj in selected:
+                modifier = deformer_sync.ensure_per_system_ao_modifier(obj, target)
+                if modifier is not None:
+                    created_ao_modifiers.append((obj, modifier))
+            if created_ao_modifiers and bpy.context.view_layer is not None:
+                bpy.context.view_layer.update()
+        except Exception as exc:
+            for obj, modifier in created_ao_modifiers:
+                if modifier.name in obj.modifiers:
+                    obj.modifiers.remove(modifier)
+            for _obj, modifier, state in ao_modifier_states:
+                for identifier, value_state in state["values"].items():
+                    _restore_custom_property(modifier, identifier, value_state)
+                modifier.show_viewport = state["show_viewport"]
+                modifier.show_render = state["show_render"]
+            deformer_sync.restore_ao_bake_settings(target, target_ao_state)
+            for root, state in root_states.items():
+                root.parent = state["parent"]
+                root.matrix_world = state["matrix_world"]
+                _restore_custom_property(
+                    root,
+                    deformer_sync.EXPORT_HIERARCHY_MOVED_PROPERTY,
+                    state["moved"],
+                )
+                _restore_custom_property(
+                    root,
+                    deformer_sync.EXPORT_ORIGINAL_PARENT_PROPERTY,
+                    state["original_parent"],
+                )
+            for obj, state in object_states.items():
+                _restore_custom_property(
+                    obj, deformer_sync.EXPORT_TARGET_PROPERTY, state["target"]
+                )
+                _restore_custom_property(
+                    obj,
+                    deformer_sync.EXPORT_LINK_ADDED_PROPERTY,
+                    state["link_marker"],
+                )
+                if not state["linked"] and collection in obj.users_collection:
+                    collection.objects.unlink(obj)
+            self.report({"ERROR"}, f"Export collection link was not changed: {exc}")
+            return {"CANCELLED"}
         self.report(
             {"INFO"},
-            f"Linked {len(selected)} selected Hair Tool output(s) to the Export collection under {target.name}; Send to Unreal was not run",
+            f"Placed {len(roots)} Hair Tool hierarchy(s) under {target.name} and linked {len(selected)} selected output(s) to Export; Send to Unreal was not run",
         )
         return {"FINISHED"}
 
@@ -141,6 +279,8 @@ class HTUE_OT_RemoveSelectedFromExport(bpy.types.Operator):
         changed = 0
         skipped = []
         preserved = []
+        cleared = []
+        roots = set()
         for obj in context.selected_objects:
             if not deformer_sync.is_hair_tool_output(obj):
                 continue
@@ -153,6 +293,7 @@ class HTUE_OT_RemoveSelectedFromExport(bpy.types.Operator):
             ):
                 skipped.append(obj.name)
                 continue
+            deformer_sync.remove_bridge_ao_modifiers(obj)
             if link_added and collection in obj.users_collection:
                 collection.objects.unlink(obj)
             if deformer_sync.EXPORT_LINK_ADDED_PROPERTY in obj:
@@ -163,6 +304,18 @@ class HTUE_OT_RemoveSelectedFromExport(bpy.types.Operator):
                 preserved.append(obj.name)
             if had_assignment or link_added:
                 changed += 1
+                cleared.append(obj)
+                roots.add(deformer_sync.hair_system_hierarchy_root(obj))
+        for root in roots:
+            still_assigned = any(
+                candidate not in cleared
+                and deformer_sync.is_hair_tool_output(candidate)
+                and deformer_sync.EXPORT_TARGET_PROPERTY in candidate
+                and deformer_sync.hair_system_hierarchy_root(candidate) == root
+                for candidate in bpy.data.objects
+            )
+            if not still_assigned:
+                deformer_sync.restore_hair_system_hierarchy(root)
         if skipped:
             self.report(
                 {"WARNING"},
