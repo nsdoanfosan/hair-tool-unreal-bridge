@@ -5,13 +5,14 @@ import bpy
 addon_utils.enable("hair_tool_unreal_bridge", default_set=False, persistent=False)
 
 import hair_tool_unreal_bridge as addon
-from hair_tool_unreal_bridge import contract, nodes, schema
+from hair_tool_unreal_bridge import contract, deformer_sync, nodes, operators, schema
 
 
 assert addon.migrate_bridge_ui_on_load in bpy.app.handlers.load_post
 assert hasattr(bpy.types.Object, "htue_ao_settings")
 assert bpy.types.HTUE_PT_sidebar.bl_category == "HT Unreal"
 assert bpy.types.HTUE_PT_sidebar_ao.bl_parent_id == "HTUE_PT_sidebar"
+assert bpy.types.HTUE_PT_sidebar_export.bl_parent_id == "HTUE_PT_sidebar"
 assert bpy.types.HTUE_PT_sidebar_maintenance.bl_parent_id == "HTUE_PT_sidebar"
 assert bpy.types.HTUE_PT_sidebar_maintenance.bl_options == {"DEFAULT_CLOSED"}
 assert bpy.types.HTUE_OT_refresh_contract.bl_label == "Refresh Hair Tool Connections"
@@ -211,5 +212,106 @@ assert shader.inputs["Factor [Map]"].links[0].from_node == factor
 assert shader.inputs["Debug Color"].links[0].from_node == system
 assert normal_node.inputs["Flip Backface Normal"].default_value == 0.5
 assert bpy.data.node_groups.get(f"{schema.SHADER_CLONE_PREFIX}::{material.name}") is None
+
+# Selected-only Export assignment stores a grouping override without changing
+# parenting, transforms, or the object's existing collection membership.
+setup_geo = bpy.data.node_groups.new("Hair_System_Setup_UI_SMOKE", "GeometryNodeTree")
+profile_geo = bpy.data.node_groups.new("Hair_System_Profile_UI_SMOKE", "GeometryNodeTree")
+setup_modifier = source_object.modifiers.new("Hair_System_Setup", "NODES")
+setup_modifier.node_group = setup_geo
+profile_modifier = source_object.modifiers.new("Profile", "NODES")
+profile_modifier.node_group = profile_geo
+export_collection = bpy.data.collections.new("Export")
+bpy.context.scene.collection.children.link(export_collection)
+empty_a = bpy.data.objects.new("Hair_A_SMOKE", None)
+empty_b = bpy.data.objects.new("Hair_B_SMOKE", None)
+export_collection.objects.link(empty_a)
+export_collection.objects.link(empty_b)
+world_before_parent = source_object.matrix_world.copy()
+source_object.parent = empty_a
+source_object.matrix_world = world_before_parent
+ao_geo = bpy.data.node_groups.new("HT_Mesh_AO_UI_SMOKE", "GeometryNodeTree")
+ao_modifier = source_object.modifiers.new("HT_Mesh_AO", "NODES")
+ao_modifier.node_group = ao_geo
+empty_a.hide_render = True
+empty_a.hide_set(True)
+bpy.ops.object.select_all(action="DESELECT")
+source_object.select_set(True)
+bpy.context.view_layer.objects.active = source_object
+original_parent = source_object.parent
+original_matrix = source_object.matrix_world.copy()
+original_collections = {collection.name for collection in source_object.users_collection}
+assert [item[0] for item in operators._export_empty_items(None, bpy.context)] == [
+    "Hair_A_SMOKE",
+    "Hair_B_SMOKE",
+]
+empty_a.hide_set(False)
+empty_a.hide_render = False
+assert bpy.ops.htue.assign_selected_to_export(target_empty=empty_b.name) == {"FINISHED"}
+assert export_collection in source_object.users_collection
+assert source_object[deformer_sync.EXPORT_TARGET_PROPERTY] == empty_b
+assert source_object[deformer_sync.EXPORT_LINK_ADDED_PROPERTY] is True
+assert deformer_sync.assigned_export_target(source_object) == empty_b
+assert deformer_sync._find_export_root(source_object) == empty_b
+assert deformer_sync._first_ao_modifier(empty_a) is None
+assert deformer_sync._first_ao_modifier(empty_b) == ao_modifier
+
+
+class FakeHairToolExport:
+    @staticmethod
+    def _final_export_sources(_collection):
+        return [source_object]
+
+    @staticmethod
+    def _asset_group_key(obj):
+        return deformer_sync.export_target(obj)
+
+assert deformer_sync._final_hair_tool_sources(empty_b, FakeHairToolExport) == [
+    source_object
+]
+assert source_object.parent == original_parent
+assert source_object.matrix_world == original_matrix
+assert bpy.ops.htue.remove_selected_from_export() == {"FINISHED"}
+assert export_collection not in source_object.users_collection
+assert deformer_sync.EXPORT_TARGET_PROPERTY not in source_object
+assert deformer_sync.EXPORT_LINK_ADDED_PROPERTY not in source_object
+assert source_object.parent == original_parent
+assert source_object.matrix_world == original_matrix
+assert {collection.name for collection in source_object.users_collection} == original_collections
+
+# A pre-existing manual Export link is preserved while its explicit Bridge
+# assignment is cleared.
+export_collection.objects.link(source_object)
+source_object[deformer_sync.EXPORT_TARGET_PROPERTY] = empty_b
+assert deformer_sync.EXPORT_LINK_ADDED_PROPERTY not in source_object
+assert bpy.ops.htue.remove_selected_from_export() == {"FINISHED"}
+assert export_collection in source_object.users_collection
+assert deformer_sync.EXPORT_TARGET_PROPERTY not in source_object
+export_collection.objects.unlink(source_object)
+
+# If Export has become the only collection after this panel added its link,
+# removal skips the object atomically instead of clearing only half the state.
+sole_source = source_object.copy()
+sole_source.name = "HTUE_Sole_Export_SMOKE"
+export_collection.objects.link(sole_source)
+sole_source[deformer_sync.EXPORT_TARGET_PROPERTY] = empty_a
+sole_source[deformer_sync.EXPORT_LINK_ADDED_PROPERTY] = True
+bpy.ops.object.select_all(action="DESELECT")
+sole_source.select_set(True)
+bpy.context.view_layer.objects.active = sole_source
+assert bpy.ops.htue.remove_selected_from_export() == {"FINISHED"}
+assert export_collection in sole_source.users_collection
+assert sole_source[deformer_sync.EXPORT_TARGET_PROPERTY] == empty_a
+assert sole_source[deformer_sync.EXPORT_LINK_ADDED_PROPERTY] is True
+bpy.data.objects.remove(sole_source, do_unlink=True)
+bpy.ops.object.select_all(action="DESELECT")
+source_object.select_set(True)
+bpy.context.view_layer.objects.active = source_object
+
+source_object[deformer_sync.EXPORT_TARGET_PROPERTY] = empty_b
+export_collection.objects.unlink(empty_b)
+assert deformer_sync.export_target(source_object) is None
+assert deformer_sync._find_export_root(source_object) is None
+del source_object[deformer_sync.EXPORT_TARGET_PROPERTY]
 
 print("HTUE_BLENDER_SMOKE_OK")
