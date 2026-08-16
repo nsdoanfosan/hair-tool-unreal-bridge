@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Hair Tool Unreal Bridge",
     "author": "PARK / OpenAI Codex",
-    "version": (0, 5, 1),
+    "version": (0, 5, 3),
     "blender": (5, 1, 0),
     "location": "Material Properties > Hair Tool Unreal Bridge",
     "description": "Synchronize Hair Tool RGB color layers, blend modes and textures with Unreal",
@@ -37,6 +37,7 @@ def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.Material.htue_settings = PointerProperty(type=properties.HTUE_MaterialSettings)
+    bpy.types.Object.htue_ao_settings = PointerProperty(type=properties.HTUE_AOBakeSettings)
     if migrate_bridge_ui_on_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(migrate_bridge_ui_on_load)
 
@@ -46,5 +47,7 @@ def unregister():
         bpy.app.handlers.load_post.remove(migrate_bridge_ui_on_load)
     if hasattr(bpy.types.Material, "htue_settings"):
         del bpy.types.Material.htue_settings
+    if hasattr(bpy.types.Object, "htue_ao_settings"):
+        del bpy.types.Object.htue_ao_settings
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

@@ -1,5 +1,14 @@
+import math
+
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, StringProperty
+from bpy.props import (
+    BoolProperty,
+    EnumProperty,
+    FloatProperty,
+    FloatVectorProperty,
+    IntProperty,
+    StringProperty,
+)
 
 from . import schema
 
@@ -47,6 +56,75 @@ def blend_property(field, name, default="NORMAL"):
         items=schema.BLEND_MODE_ITEMS,
         default=default,
         update=_update_setting(field),
+    )
+
+
+def _update_ao_bake_setting(self, _context):
+    root = self.id_data
+    if not isinstance(root, bpy.types.Object):
+        return
+    from . import deformer_sync
+
+    for preview in deformer_sync._preview_objects(root):
+        preview["_htue_combined_ao_preview_stale"] = True
+
+
+class HTUE_AOBakeSettings(bpy.types.PropertyGroup):
+    initialized: BoolProperty(default=False, options={"HIDDEN"})
+    evaluation_mode: EnumProperty(
+        name="AO Evaluation Mode",
+        items=(
+            (
+                "PER_SYSTEM",
+                "Per System",
+                "Evaluate AO on each Hair Tool system, then preserve it while joining",
+            ),
+            (
+                "COMBINED",
+                "Combined",
+                "Join the generated card geometry first, then evaluate AO once",
+            ),
+        ),
+        default="PER_SYSTEM",
+        update=_update_ao_bake_setting,
+    )
+    samples: IntProperty(
+        name="Samples", min=1, max=64, default=8, update=_update_ao_bake_setting
+    )
+    base_color_value: FloatProperty(
+        name="Base Color Value",
+        min=0.0,
+        max=1.0,
+        default=0.0,
+        update=_update_ao_bake_setting,
+    )
+    spread_angle: FloatProperty(
+        name="Spread Angle",
+        subtype="ANGLE",
+        min=0.0,
+        max=math.pi,
+        default=math.radians(60.0),
+        update=_update_ao_bake_setting,
+    )
+    blur_steps: IntProperty(
+        name="Blur Steps", min=0, max=16, default=1, update=_update_ao_bake_setting
+    )
+    first_bounce_factor: FloatProperty(
+        name="First Bounce Factor",
+        min=0.0,
+        max=2.0,
+        default=0.6,
+        update=_update_ao_bake_setting,
+    )
+    second_bounce_factor: FloatProperty(
+        name="Second Bounce Factor",
+        min=0.0,
+        max=2.0,
+        default=0.4,
+        update=_update_ao_bake_setting,
+    )
+    use_custom_normals: BoolProperty(
+        name="Use Custom Normals", default=False, update=_update_ao_bake_setting
     )
 
 
@@ -131,4 +209,4 @@ class HTUE_MaterialSettings(bpy.types.PropertyGroup):
     roughness_minimum: unit_property("roughness_minimum", "Roughness Minimum", 0.08)
 
 
-CLASSES = (HTUE_MaterialSettings,)
+CLASSES = (HTUE_AOBakeSettings, HTUE_MaterialSettings)

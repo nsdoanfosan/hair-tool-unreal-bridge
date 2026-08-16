@@ -16,9 +16,9 @@ evaluated in the same order in Blender and Unreal:
 
 1. `HT Base Color`
 2. System Color (evaluated Hair Tool `SystemColor.RGB` in both renderers)
-3. Root (`RFAOS.G`, optionally `IRD Map.G`)
-4. Tip (`RFAOS.G`, optionally `OneMinus(IRD Map.G)`)
-5. ID tint (`RFAOS.R` or `IRD Map.R`)
+3. Root (`RFAOS.G`, optionally `IRD Map.G`; random source is `RFAOS.R` or `IRD Map.R`)
+4. Tip (`RFAOS.G`, optionally `OneMinus(IRD Map.G)`; same shared random source)
+5. ID tint (the same `RFAOS.R` or `IRD Map.R` source)
 6. Depth tint (`Depth` vertex attribute or `IRD Map.B`)
 7. AO (`RFAOS.B` and `ORM Map.R`)
 
@@ -32,8 +32,23 @@ Hair Tool's own Attribute nodes. A missing native input is filled without
 replacing any existing link, and the added link is recorded so Restore can
 remove it. Missing Blender AO data is neutralized inside the preview; AO is
 enabled only when it exists on evaluated viewport geometry. The bridge does not
-force the expensive AO generator on. Hair Tool's safe Map Range behavior is
-also preserved: `HT Root Range = 0` means a full Root layer, not a disabled one.
+force the expensive AO generator onto every live system. The 3D View sidebar
+has a dedicated **HT Unreal** tab. AO evaluation is an explicit per-export-Empty
+choice: **Per System** evaluates each Hair Tool system before joining, while
+**Combined** joins only generated cards and then evaluates AO once. There is no
+automatic mode switch. `_02` defaults to Per System because its tested combined
+mean fell from `0.543` to `0.236`. Samples, Spread Angle, Base Color Value,
+Blur, Bounce factors, and Custom Normals are stored on the Empty and applied
+only to disposable evaluation copies. Blender and Unreal consume the same AO
+attribute. The editable systems are only hidden and can be restored with
+**Return to Live Hair Tool**.
+Material edits remain live on the cached preview; geometry edits require
+Refresh. Send to Unreal always follows the selected AO order. `AO
+Strength` softens excessive card self-occlusion in both renderers without
+disabling the AO layer. Hair Tool's safe Map Range behavior is also preserved:
+`HT Root Range = 0` means a full Root layer, not a disabled one.
+Starting Send to Unreal automatically removes the display cache and restores
+the original live Hair Tool systems before it evaluates the export.
 
 ## Transport contract
 
@@ -71,6 +86,12 @@ The compact **Hair Tool Unreal Bridge** UI uses native Blender 5.1 child panels
 for Source, Base, System Color, Root, Tip, ID, Depth, and AO/Roughness. Hair
 Tool's original Surface inputs remain available, but their legacy color mixing
 does not feed the replacement stack.
+For renderer parity, setup also changes each unlinked Hair Tool
+`HTool_Normal > Flip Backface Normal` socket from the stock `0.5` to `1.0`.
+At `0.5` the backface result is halfway between `N` and `-N`, which is a zero
+normal; Unreal's two-sided hair path uses the fully flipped backface normal.
+Restore records and reinstates the original per-material socket value without
+editing Hair Tool's shared node group.
 Existing bridge materials are upgraded automatically when their `.blend` file
 is reopened; **Refresh Hooks + Unreal** also performs the UI migration immediately.
 Interactive edits update only the one stack socket owned by the changed field;

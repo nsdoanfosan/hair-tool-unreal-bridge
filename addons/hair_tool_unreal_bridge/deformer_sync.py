@@ -1,4 +1,21 @@
+import json
+
 import bpy
+
+
+COMBINED_PREVIEW_PROPERTY = "_htue_combined_ao_preview"
+COMBINED_PREVIEW_ROOT_PROPERTY = "_htue_combined_ao_root"
+COMBINED_PREVIEW_SOURCES_PROPERTY = "_htue_combined_ao_sources"
+PREVIEW_COLLECTION_NAME = "HTUE Combined AO Preview"
+AO_MODIFIER_FIELDS = {
+    "samples": ("Input_3", 8),
+    "base_color_value": ("Input_13", 0.0),
+    "spread_angle": ("Input_4", 1.0471975512),
+    "blur_steps": ("Input_8", 1),
+    "first_bounce_factor": ("Input_14", 0.6),
+    "second_bounce_factor": ("Input_15", 0.4),
+    "use_custom_normals": ("Socket_0", False),
+}
 
 
 def _same_material(candidate, material):
@@ -59,3 +76,244 @@ def has_evaluated_source_attribute(material, attribute_name):
 def has_ao_source(material):
     """Backward-compatible alias for callers outside the bridge."""
     return has_evaluated_source_attribute(material, "AO")
+
+
+def _find_export_root(obj):
+    """Return the nearest Hair Tool export container above *obj*, if present."""
+    current = obj
+    while current is not None:
+        if current.type == "EMPTY":
+            return current
+        current = current.parent
+    return None
+
+
+def _first_ao_modifier(root):
+    for obj in (root, *root.children_recursive):
+        for modifier in getattr(obj, "modifiers", ()):
+            node_group = getattr(modifier, "node_group", None)
+            if (
+                modifier.type == "NODES"
+                and node_group is not None
+                and node_group.name.startswith("HT_Mesh_AO")
+            ):
+                return modifier
+    return None
+
+
+def ao_bake_configuration(root):
+    settings = root.htue_ao_settings
+    if not settings.initialized:
+        modifier = _first_ao_modifier(root)
+        if modifier is not None:
+            for field, (identifier, fallback) in AO_MODIFIER_FIELDS.items():
+                value = modifier.get(identifier, fallback)
+                setattr(settings, field, value)
+        settings.initialized = True
+    return {
+        "evaluation_mode": settings.evaluation_mode,
+        **{
+            field: getattr(settings, field)
+            for field in AO_MODIFIER_FIELDS
+        },
+    }
+
+
+def _preview_objects(root=None):
+    root_name = root.name if root is not None else None
+    return [
+        obj
+        for obj in bpy.data.objects
+        if bool(obj.get(COMBINED_PREVIEW_PROPERTY))
+        and (
+            root_name is None
+            or str(obj.get(COMBINED_PREVIEW_ROOT_PROPERTY, "")) == root_name
+        )
+    ]
+
+
+def combined_ao_preview_state(context_object=None):
+    root = _find_export_root(context_object)
+    if root is None and context_object is not None and context_object.get(COMBINED_PREVIEW_PROPERTY):
+        root = bpy.data.objects.get(str(context_object.get(COMBINED_PREVIEW_ROOT_PROPERTY, "")))
+    previews = _preview_objects(root) if root is not None else []
+    preview = previews[0] if previews else None
+    stats = {}
+    if preview is not None:
+        try:
+            stats = json.loads(str(preview.get("_htue_combined_ao_stats", "{}")))
+        except (TypeError, ValueError):
+            stats = {}
+    return {
+        "root": root.name if root is not None else "",
+        "exists": preview is not None,
+        "object": preview,
+        "stats": stats,
+    }
+
+
+def remove_combined_ao_preview(context_object=None, root=None):
+    root = root or _find_export_root(context_object)
+    if root is None and context_object is not None and context_object.get(COMBINED_PREVIEW_PROPERTY):
+        root = bpy.data.objects.get(str(context_object.get(COMBINED_PREVIEW_ROOT_PROPERTY, "")))
+    previews = _preview_objects(root) if root is not None else []
+    restored = []
+    for preview in previews:
+        try:
+            source_names = json.loads(
+                str(preview.get(COMBINED_PREVIEW_SOURCES_PROPERTY, "[]"))
+            )
+        except (TypeError, ValueError):
+            source_names = []
+        for source_state in source_names:
+            if isinstance(source_state, str):
+                source_state = {"name": source_state}
+            source = bpy.data.objects.get(str(source_state.get("name", "")))
+            if source is None:
+                continue
+            source.hide_set(bool(source_state.get("hidden", False)))
+            source.hide_render = bool(source_state.get("hide_render", False))
+            restored.append(source)
+        mesh = preview.data if preview.type == "MESH" else None
+        bpy.data.objects.remove(preview, do_unlink=True)
+        if mesh is not None and mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+    if bpy.context.view_layer is not None:
+        bpy.context.view_layer.update()
+    return {"root": root, "restored": restored, "removed": len(previews)}
+
+
+def _final_hair_tool_sources(root, hair_tool_export):
+    candidates = [
+        obj
+        for obj in (root, *root.children_recursive)
+        if obj.visible_get() and hair_tool_export.is_hair_tool_object(obj)
+    ]
+    upstream = {
+        input_object
+        for input_object in (
+            hair_tool_export._get_hair_tool_input_object(obj) for obj in candidates
+        )
+        if input_object in candidates
+    }
+    return [obj for obj in candidates if obj not in upstream]
+
+
+def _preview_collection():
+    collection = bpy.data.collections.get(PREVIEW_COLLECTION_NAME)
+    if collection is None:
+        collection = bpy.data.collections.new(PREVIEW_COLLECTION_NAME)
+        bpy.context.scene.collection.children.link(collection)
+    return collection
+
+
+def build_combined_ao_preview(material, context_object=None):
+    """Build the same joined-AO mesh used by Send to Unreal for one asset."""
+    root = _find_export_root(context_object)
+    if root is None:
+        raise RuntimeError("Select a Hair Tool object under an exported Empty")
+
+    remove_combined_ao_preview(root=root)
+    try:
+        from send2ue.core import hair_tool_export
+    except ImportError as error:
+        raise RuntimeError("Send to Unreal Hair Tool exporter is unavailable") from error
+
+    sources = _final_hair_tool_sources(root, hair_tool_export)
+    if not sources:
+        raise RuntimeError(f"{root.name}: no visible final Hair Tool outputs found")
+
+    state = {
+        "temporary_object_names": set(),
+        "temporary_mesh_names": set(),
+    }
+    ao_configuration = ao_bake_configuration(root)
+    preview = None
+    source_states = [
+        {
+            "name": source.name,
+            "hidden": bool(source.hide_get()),
+            "hide_render": bool(source.hide_render),
+        }
+        for source in sources
+    ]
+    try:
+        parts = []
+        for source in sources:
+            parts.extend(
+                hair_tool_export._evaluated_mesh_objects(
+                    source,
+                    state,
+                    include_system_ao=(
+                        ao_configuration["evaluation_mode"] == "PER_SYSTEM"
+                    ),
+                    ao_settings=ao_configuration,
+                )
+            )
+        if not parts:
+            raise RuntimeError(f"{root.name}: evaluated Hair Tool geometry is empty")
+
+        preview = hair_tool_export._join_objects(parts)
+        preview.name = f"{root.name}__HTUE_COMBINED_AO_PREVIEW"
+        preview.data.name = preview.name
+        if ao_configuration["evaluation_mode"] == "COMBINED":
+            hair_tool_export._evaluate_combined_ao(
+                preview,
+                state,
+                ao_settings=ao_configuration,
+            )
+        else:
+            hair_tool_export._preserve_per_system_ao(preview, state)
+        preview.data.name = preview.name
+        hair_tool_export._remove_empty_material_slots(preview)
+
+        collection = _preview_collection()
+        for owner in list(preview.users_collection):
+            owner.objects.unlink(preview)
+        collection.objects.link(preview)
+        world_matrix = preview.matrix_world.copy()
+        preview.parent = root
+        preview.matrix_parent_inverse = root.matrix_world.inverted_safe()
+        preview.matrix_world = world_matrix
+        preview[COMBINED_PREVIEW_PROPERTY] = True
+        preview[COMBINED_PREVIEW_ROOT_PROPERTY] = root.name
+        preview[COMBINED_PREVIEW_SOURCES_PROPERTY] = json.dumps(source_states)
+        stats = state.get("ao_stats", {}).get(preview.name, {})
+        if not stats:
+            # The exporter recorded the name before Blender finalized a suffix.
+            stats = next(iter(state.get("ao_stats", {}).values()), {})
+        preview["_htue_combined_ao_stats"] = json.dumps(stats)
+        preview["_htue_ao_evaluation_mode"] = ao_configuration["evaluation_mode"]
+        preview["_htue_ao_bake_settings"] = json.dumps(ao_configuration)
+        preview.pop("_htue_combined_ao_preview_stale", None)
+        preview.hide_render = False
+
+        for source in sources:
+            source.hide_set(True)
+            source.hide_render = True
+
+        bpy.ops.object.select_all(action="DESELECT")
+        preview.hide_set(False)
+        preview.select_set(True)
+        bpy.context.view_layer.objects.active = preview
+        bpy.context.view_layer.update()
+        return {
+            "root": root,
+            "preview": preview,
+            "sources": sources,
+            "stats": stats,
+        }
+    except Exception:
+        for source_state in source_states:
+            source = bpy.data.objects.get(source_state["name"])
+            if source is not None:
+                source.hide_set(source_state["hidden"])
+                source.hide_render = source_state["hide_render"]
+        for object_name in list(state["temporary_object_names"]):
+            temporary = bpy.data.objects.get(object_name)
+            if temporary is not None:
+                mesh = temporary.data if temporary.type == "MESH" else None
+                bpy.data.objects.remove(temporary, do_unlink=True)
+                if mesh is not None and mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+        raise

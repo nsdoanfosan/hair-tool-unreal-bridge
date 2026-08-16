@@ -9,6 +9,9 @@ from hair_tool_unreal_bridge import contract, nodes, schema
 
 
 assert addon.migrate_bridge_ui_on_load in bpy.app.handlers.load_post
+assert hasattr(bpy.types.Object, "htue_ao_settings")
+assert bpy.types.HTUE_PT_sidebar.bl_category == "HT Unreal"
+assert bpy.types.HTUE_PT_sidebar_ao.bl_parent_id == "HTUE_PT_sidebar"
 
 
 def input_socket(tree, name, socket_type, default):
@@ -56,6 +59,18 @@ material.use_nodes = True
 shader = material.node_tree.nodes.new("ShaderNodeGroup")
 shader.name = "HairShaderMain"
 shader.node_tree = hair_group
+
+normal_group = bpy.data.node_groups.new("HTool_Normal", "ShaderNodeTree")
+normal_input = normal_group.interface.new_socket(
+    name="Flip Backface Normal", in_out="INPUT", socket_type="NodeSocketFloat"
+)
+normal_input.default_value = 0.5
+normal_group.interface.new_socket(
+    name="Result", in_out="OUTPUT", socket_type="NodeSocketVector"
+)
+normal_node = material.node_tree.nodes.new("ShaderNodeGroup")
+normal_node.name = "Hair Tool Normal"
+normal_node.node_tree = normal_group
 
 factor = material.node_tree.nodes.new("ShaderNodeAttribute")
 factor.name = "Hair Tool Factor"
@@ -109,6 +124,7 @@ for bridge_owned_input in (
 assert shader.node_tree.nodes["Hair Tool Final Color"].inputs[0].links[0].from_node == stack
 assert shader.inputs.get("HTUE System Mask") is None
 assert material.htue_settings.initialized
+assert normal_node.inputs["Flip Backface Normal"].default_value == 1.0
 assert contract.validate_material(material) == []
 saved_v3 = schema.loads_contract(material[schema.CONTRACT_PROPERTY])
 assert saved_v3["version"] == 3
@@ -161,12 +177,24 @@ assert stack.node_tree.nodes["HTUE Stage ID Base"].inputs[0].links[0].from_node.
 assert stack.node_tree.nodes["HTUE Stage Depth Base"].inputs[0].links[0].from_node.name == "HTUE Stage ID"
 assert stack.node_tree.nodes["HTUE Stage AO Base"].inputs[0].links[0].from_node.name == "HTUE Stage Depth"
 
+# Unreal shares the Random/ID source between Root, Tip, and ID. With
+# ID Map Influence=1 this is IRD.R; with 0 it is Hair Tool's Random attribute.
+assert (
+    stack.node_tree.nodes["HTUE Root Random Value"].inputs[0].links[0].from_node.name
+    == "HTUE ID Driver"
+)
+assert (
+    stack.node_tree.nodes["HTUE Tip Random Value"].inputs[0].links[0].from_node.name
+    == "HTUE ID Driver"
+)
+
 # Re-running setup is the load migration path and must keep native links.
 addon.migrate_bridge_ui_on_load(None)
 shader = material.node_tree.nodes["HairShaderMain"]
 stack = shader.node_tree.nodes[schema.INTERNAL_STACK_NODE_NAME]
 assert shader.inputs["Factor [Map]"].links[0].from_node == factor
 assert shader.inputs["Debug Color"].links[0].from_node == system
+assert normal_node.inputs["Flip Backface Normal"].default_value == 1.0
 
 nodes.restore_material(material)
 assert not material.htue_settings.initialized
@@ -174,6 +202,7 @@ assert shader.node_tree == hair_group
 assert shader.inputs["Root Color Mix Factor"].default_value == 1.0
 assert shader.inputs["Factor [Map]"].links[0].from_node == factor
 assert shader.inputs["Debug Color"].links[0].from_node == system
+assert normal_node.inputs["Flip Backface Normal"].default_value == 0.5
 assert bpy.data.node_groups.get(f"{schema.SHADER_CLONE_PREFIX}::{material.name}") is None
 
 print("HTUE_BLENDER_SMOKE_OK")

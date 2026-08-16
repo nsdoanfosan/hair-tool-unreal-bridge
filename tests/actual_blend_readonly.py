@@ -31,6 +31,15 @@ for material_name in schema.TARGET_TEXTURE_SETS:
     }
     data, transport = contract.refresh_material_contract(material)
     results[material_name] = {
+        "unreal_backface_normals": [
+            float(node.inputs[schema.BACKFACE_NORMAL_INPUT].default_value)
+            for node in material.node_tree.nodes
+            if node.bl_idname == "ShaderNodeGroup"
+            and node.node_tree is not None
+            and node.node_tree.name == schema.HAIR_TOOL_NORMAL_GROUP
+            and node.inputs.get(schema.BACKFACE_NORMAL_INPUT) is not None
+            and not node.inputs[schema.BACKFACE_NORMAL_INPUT].is_linked
+        ],
         "existing_links_preserved": all(
             not before[name] or before[name] == after[name]
             for name in tracked_inputs
@@ -75,5 +84,13 @@ assert all(not item["contract_errors"] for item in results.values())
 assert all(item["legacy_color_result_replaced"] for item in results.values())
 assert all(item["legacy_material_blends_disconnected"] for item in results.values())
 assert all(item["contract_version"] == 3 for item in results.values())
+assert all(
+    item["unreal_backface_normals"]
+    and all(
+        value == schema.UNREAL_BACKFACE_NORMAL_VALUE
+        for value in item["unreal_backface_normals"]
+    )
+    for item in results.values()
+)
 assert all(item["system_color_alpha_socket_removed"] for item in results.values())
 print("HTUE_ACTUAL_BLEND_READONLY=" + json.dumps(results, sort_keys=True))
