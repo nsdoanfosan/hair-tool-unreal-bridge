@@ -45,6 +45,9 @@ def _draw_ao_workflow(layout, context):
     values.prop(settings, "blur_steps")
     values.prop(settings, "first_bounce_factor")
     values.prop(settings, "second_bounce_factor")
+    if settings.evaluation_mode == "COMBINED":
+        values.prop(settings, "combined_max_ray_distance")
+        values.label(text="Shorter distance prevents cross-system over-occlusion")
     values.prop(settings, "use_custom_normals")
 
     state = deformer_sync.combined_ao_preview_state(context.object)
