@@ -312,6 +312,96 @@ class HTUE_PT_SidebarMaintenance(bpy.types.Panel):
         layout.label(text="Deformers and Unreal assets stay intact")
 
 
+class HTUE_PT_SidebarExport(bpy.types.Panel):
+    bl_label = "Export Collection Link"
+    bl_idname = "HTUE_PT_sidebar_export"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "HT Unreal"
+    bl_parent_id = "HTUE_PT_sidebar"
+    bl_order = 0
+
+    def draw(self, context):
+        layout = self.layout
+        all_selected = deformer_sync.selected_hair_tool_outputs(
+            context,
+            render_only=False,
+        )
+        selected = deformer_sync.selected_hair_tool_outputs(context)
+        if not all_selected:
+            layout.label(text="Select Hair Tool output objects", icon="INFO")
+            return
+
+        layout.label(
+            text=f"Exportable: {len(selected)} / Selected Hair Tool: {len(all_selected)}"
+        )
+        if len(selected) != len(all_selected):
+            layout.label(text="Hidden or render-disabled selections are skipped", icon="ERROR")
+
+        active = context.view_layer.objects.active
+        if active in all_selected:
+            layout.label(text=f"Active: {active.name}", icon="OBJECT_DATA")
+            collection = deformer_sync.export_collection()
+            linked = bool(collection and collection in active.users_collection)
+            target = deformer_sync.export_target(active)
+            has_assignment = deformer_sync.EXPORT_TARGET_PROPERTY in active
+            if has_assignment and target is None:
+                layout.label(text="Saved Export Empty is unavailable; relink", icon="ERROR")
+            elif linked and target is not None:
+                layout.label(text=f"Export Empty: {target.name}", icon="OUTLINER_OB_EMPTY")
+            elif linked:
+                layout.label(text="Linked to Export collection; no Empty target", icon="LINKED")
+            else:
+                layout.label(text="Not linked to Export collection", icon="UNLINKED")
+            if not deformer_sync.has_ao_modifier(active):
+                layout.label(
+                    text="Per-system AO unavailable (export still allowed)",
+                    icon="INFO",
+                )
+
+        targets = deformer_sync.export_empties()
+        if not targets:
+            layout.label(text="No Empty exists in the Export collection", icon="ERROR")
+            assign_text = "No Export Empty Available"
+        elif len(targets) == 1:
+            assign_text = f"Link to {targets[0].name}"
+        else:
+            assign_text = "Link Selected to Export Collection..."
+
+        if len(selected) > 1:
+            selected_targets = {
+                target.name if target is not None else "Not linked"
+                for target in (
+                    deformer_sync.export_target(obj) for obj in selected
+                )
+            }
+            status = next(iter(selected_targets)) if len(selected_targets) == 1 else "Mixed"
+            layout.label(text=f"Selected Empty targets: {status}")
+
+        assign_column = layout.column(align=True)
+        assign_column.enabled = bool(selected and targets)
+        assign_column.operator(
+            "htue.assign_selected_to_export",
+            text=assign_text,
+            icon="LINKED",
+        )
+        has_added_link = any(
+            bool(obj.get(deformer_sync.EXPORT_LINK_ADDED_PROPERTY))
+            for obj in all_selected
+        )
+        remove_text = (
+            "Unlink Selected from Export Collection"
+            if has_added_link
+            else "Clear Selected Export Empty Target"
+        )
+        layout.operator(
+            "htue.remove_selected_from_export",
+            text=remove_text,
+            icon="UNLINKED",
+        )
+        layout.label(text="Collection link only - Send to Unreal is not run")
+
+
 class HTUE_PT_SidebarAO(bpy.types.Panel):
     bl_label = "AO Evaluation & Preview"
     bl_idname = "HTUE_PT_sidebar_ao"
@@ -345,6 +435,7 @@ CLASSES = (
     HTUE_PT_Depth,
     HTUE_PT_AO,
     HTUE_PT_Sidebar,
+    HTUE_PT_SidebarExport,
     HTUE_PT_SidebarMaintenance,
     HTUE_PT_SidebarAO,
 )

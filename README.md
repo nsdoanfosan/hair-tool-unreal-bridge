@@ -81,6 +81,17 @@ compatible preview group and persisted Unreal contract together. Send to Unreal
 reads evaluated `SystemColor.RGB` directly while preparing the disposable export
 mesh, so no material-level color copy or Alpha classification is required.
 
+The 3D View **HT Unreal > Export Collection Link** panel links only the selected,
+visible, render-enabled Hair Tool outputs directly to `Export`. When `Export`
+contains more than one direct Empty, Blender asks which Empty should own the
+Send to Unreal asset. The Empty target is stored as an object pointer, so
+renaming the Empty is safe and no parent, transform, modifier, geometry, or
+existing collection is changed. **Unlink Selected from Export Collection**
+removes only a link that this panel added; a pre-existing Export collection link
+is preserved while its explicit Empty target is cleared. Existing Export links
+are never replaced automatically. These controls only edit collection links;
+they do not run Send to Unreal.
+
 Implementation-only sockets are hidden from Blender's recursive Surface UI.
 The compact **Hair Tool Unreal Bridge** UI uses native Blender 5.1 child panels
 for Source, Base, System Color, Root, Tip, ID, Depth, and AO/Roughness. Hair

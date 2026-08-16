@@ -7,6 +7,9 @@ COMBINED_PREVIEW_PROPERTY = "_htue_combined_ao_preview"
 COMBINED_PREVIEW_ROOT_PROPERTY = "_htue_combined_ao_root"
 COMBINED_PREVIEW_SOURCES_PROPERTY = "_htue_combined_ao_sources"
 PREVIEW_COLLECTION_NAME = "HTUE Combined AO Preview"
+DEFAULT_EXPORT_COLLECTION_NAME = "Export"
+EXPORT_TARGET_PROPERTY = "_htue_export_target"
+EXPORT_LINK_ADDED_PROPERTY = "_htue_export_link_added"
 AO_MODIFIER_FIELDS = {
     "samples": ("Input_3", 8),
     "base_color_value": ("Input_13", 0.0),
@@ -16,6 +19,114 @@ AO_MODIFIER_FIELDS = {
     "second_bounce_factor": ("Input_15", 0.4),
     "use_custom_normals": ("Socket_0", False),
 }
+
+
+def is_hair_tool_output(obj):
+    """Return whether *obj* is an editable Hair Tool output object."""
+    if obj is None or obj.type not in {"CURVES", "MESH"}:
+        return False
+    node_group_names = {
+        modifier.node_group.name
+        for modifier in obj.modifiers
+        if modifier.type == "NODES" and modifier.node_group is not None
+    }
+    normalized = set()
+    for modifier in obj.modifiers:
+        if modifier.type != "NODES":
+            continue
+        normalized.add(
+            str(modifier.name).strip().replace(" ", "_").casefold()
+        )
+        if modifier.node_group is not None:
+            normalized.add(
+                modifier.node_group.name.strip().replace(" ", "_").casefold()
+            )
+    if "edit_mesh" in normalized:
+        return False
+    return (
+        any(name.startswith("Hair_System_Setup") for name in node_group_names)
+        and any(name.startswith("Hair_System_Profile") for name in node_group_names)
+    )
+
+
+def selected_hair_tool_outputs(context, render_only=True):
+    return [
+        obj
+        for obj in context.selected_objects
+        if is_hair_tool_output(obj)
+        and not obj.get(COMBINED_PREVIEW_PROPERTY)
+        and (
+            not render_only
+            or (
+                not obj.hide_render
+                and obj.visible_get(view_layer=context.view_layer)
+            )
+        )
+    ]
+
+
+def export_collection_name():
+    try:
+        from send2ue.constants import ToolInfo
+        return str(ToolInfo.EXPORT_COLLECTION.value)
+    except (ImportError, AttributeError):
+        return DEFAULT_EXPORT_COLLECTION_NAME
+
+
+def export_collection():
+    return bpy.data.collections.get(export_collection_name())
+
+
+def export_empties():
+    collection = export_collection()
+    if collection is None:
+        return []
+    return sorted(
+        (
+            obj
+            for obj in collection.objects
+            if obj.type == "EMPTY"
+        ),
+        key=lambda obj: obj.name.casefold(),
+    )
+
+
+def assigned_export_target(obj):
+    target = obj.get(EXPORT_TARGET_PROPERTY)
+    if not isinstance(target, bpy.types.Object) or target.type != "EMPTY":
+        return None
+    collection = export_collection()
+    if collection is None or target.name not in collection.objects:
+        return None
+    return target
+
+
+def inherited_export_target(obj):
+    collection = export_collection()
+    if collection is None:
+        return None
+    exported = set(collection.all_objects)
+    parent = obj.parent
+    while parent is not None:
+        if parent.type == "EMPTY" and parent in exported:
+            return parent
+        parent = parent.parent
+    return None
+
+
+def export_target(obj):
+    if EXPORT_TARGET_PROPERTY in obj:
+        return assigned_export_target(obj)
+    return inherited_export_target(obj)
+
+
+def has_ao_modifier(obj):
+    return any(
+        modifier.type == "NODES"
+        and modifier.node_group is not None
+        and modifier.node_group.name.startswith("HT_Mesh_AO")
+        for modifier in obj.modifiers
+    )
 
 
 def _same_material(candidate, material):
@@ -80,6 +191,8 @@ def has_ao_source(material):
 
 def _find_export_root(obj):
     """Return the nearest Hair Tool export container above *obj*, if present."""
+    if obj is not None and EXPORT_TARGET_PROPERTY in obj:
+        return assigned_export_target(obj)
     current = obj
     while current is not None:
         if current.type == "EMPTY":
@@ -89,7 +202,18 @@ def _find_export_root(obj):
 
 
 def _first_ao_modifier(root):
-    for obj in (root, *root.children_recursive):
+    collection = export_collection()
+    if collection is None:
+        return None
+    objects = [
+        obj
+        for obj in collection.objects
+        if is_hair_tool_output(obj)
+        and not obj.hide_render
+        and obj.visible_get()
+        and export_target(obj) == root
+    ]
+    for obj in objects:
         for modifier in getattr(obj, "modifiers", ()):
             node_group = getattr(modifier, "node_group", None)
             if (
@@ -185,19 +309,15 @@ def remove_combined_ao_preview(context_object=None, root=None):
 
 
 def _final_hair_tool_sources(root, hair_tool_export):
+    collection = export_collection()
+    if collection is None:
+        return []
     candidates = [
         obj
-        for obj in (root, *root.children_recursive)
-        if obj.visible_get() and hair_tool_export.is_hair_tool_object(obj)
+        for obj in hair_tool_export._final_export_sources(collection)
+        if hair_tool_export._asset_group_key(obj) == root
     ]
-    upstream = {
-        input_object
-        for input_object in (
-            hair_tool_export._get_hair_tool_input_object(obj) for obj in candidates
-        )
-        if input_object in candidates
-    }
-    return [obj for obj in candidates if obj not in upstream]
+    return candidates
 
 
 def _preview_collection():
