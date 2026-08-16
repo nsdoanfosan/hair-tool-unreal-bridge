@@ -112,6 +112,7 @@ def ao_bake_configuration(root):
         settings.initialized = True
     return {
         "evaluation_mode": settings.evaluation_mode,
+        "combined_max_ray_distance": settings.combined_max_ray_distance,
         **{
             field: getattr(settings, field)
             for field in AO_MODIFIER_FIELDS

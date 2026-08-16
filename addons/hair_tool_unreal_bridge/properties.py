@@ -123,6 +123,19 @@ class HTUE_AOBakeSettings(bpy.types.PropertyGroup):
         default=0.4,
         update=_update_ao_bake_setting,
     )
+    combined_max_ray_distance: FloatProperty(
+        name="Max Ray Distance",
+        description=(
+            "Maximum Hair Tool AO ray distance used only after the generated "
+            "systems are joined in Combined mode"
+        ),
+        subtype="DISTANCE",
+        min=0.000001,
+        soft_max=0.1,
+        default=0.011,
+        precision=4,
+        update=_update_ao_bake_setting,
+    )
     use_custom_normals: BoolProperty(
         name="Use Custom Normals", default=False, update=_update_ao_bake_setting
     )
