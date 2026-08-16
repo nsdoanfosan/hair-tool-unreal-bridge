@@ -32,16 +32,22 @@ Hair Tool's own Attribute nodes. A missing native input is filled without
 replacing any existing link, and the added link is recorded so Restore can
 remove it. Missing Blender AO data is neutralized inside the preview; AO is
 enabled only when it exists on evaluated viewport geometry. The bridge does not
-force the expensive AO generator onto every live system. The 3D View sidebar
-has a dedicated **HT Unreal** tab. AO evaluation is an explicit per-export-Empty
-choice: **Per System** evaluates each Hair Tool system before joining, while
-**Combined** joins only generated cards and then evaluates AO once. There is no
-automatic mode switch. `_02` defaults to Per System because its tested combined
-mean fell from `0.543` to `0.236`. Samples, Spread Angle, Base Color Value,
-Blur, Bounce factors, and Custom Normals are stored on the Empty and applied
-only to disposable evaluation copies. Blender and Unreal consume the same AO
-attribute. The editable systems are only hidden and can be restored with
-**Return to Live Hair Tool**.
+force the expensive AO generator onto every live system. In **Per System** mode,
+only an explicitly linked final output that has no native AO modifier receives
+a reversible Bridge-owned `HT_Mesh_AO` modifier. The Empty AO controls update
+that fallback modifier in the viewport; native Hair Tool AO modifiers remain
+unchanged. Switching that output to **Combined** disables only the Bridge-owned
+live modifier, because Combined AO is evaluated on the joined preview/export
+geometry. The 3D View sidebar has a dedicated **HT Unreal** tab. AO evaluation
+is an explicit per-export-Empty choice: **Per System** evaluates each Hair Tool
+system before joining, while **Combined** joins only generated cards and then
+evaluates AO once. There is no automatic mode switch. `_02` defaults to Per
+System because its tested combined mean fell from `0.543` to `0.236`. Samples,
+Spread Angle, Base Color Value, Blur, Bounce factors, and Custom Normals are
+stored on the Empty and applied to disposable export copies plus that
+Bridge-owned fallback. Blender and Unreal consume the same AO attribute. The
+editable systems are only hidden and can be restored with **Return to Live Hair
+Tool**.
 Material edits remain live on the cached preview; geometry edits require
 Refresh. Send to Unreal always follows the selected AO order. `AO
 Strength` softens excessive card self-occlusion in both renderers without
@@ -84,13 +90,18 @@ mesh, so no material-level color copy or Alpha classification is required.
 The 3D View **HT Unreal > Export Collection Link** panel links only the selected,
 visible, render-enabled Hair Tool outputs directly to `Export`. When `Export`
 contains more than one direct Empty, Blender asks which Empty should own the
-Send to Unreal asset. The Empty target is stored as an object pointer, so
-renaming the Empty is safe and no parent, transform, modifier, geometry, or
-existing collection is changed. **Unlink Selected from Export Collection**
-removes only a link that this panel added; a pre-existing Export collection link
-is preserved while its explicit Empty target is cleared. Existing Export links
-are never replaced automatically. These controls only edit collection links;
-they do not run Send to Unreal.
+Send to Unreal asset. The complete upstream Hair Tool parent chain is kept
+together and its top object is placed under that Empty without changing world
+transforms. Only the selected final output is linked directly to `Export`; its
+hidden source mesh and curve keep their existing disabled state and collection
+membership. The Empty target and original parent are stored as object pointers,
+so renaming either is safe. **Unlink Selected from Export Collection** removes
+only a link that this panel added, restores a hierarchy parent moved by this
+panel, removes only a fallback AO modifier that this panel added, and preserves
+any pre-existing Export collection link or native Hair Tool AO modifier.
+Existing Export links are never replaced automatically. These controls organize
+the Blender hierarchy, collection, and missing Per System AO only; they do not
+run Send to Unreal.
 
 Implementation-only sockets are hidden from Blender's recursive Surface UI.
 The compact **Hair Tool Unreal Bridge** UI uses native Blender 5.1 child panels

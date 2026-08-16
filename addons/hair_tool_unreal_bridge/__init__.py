@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Hair Tool Unreal Bridge",
     "author": "PARK / OpenAI Codex",
-    "version": (0, 6, 0),
+    "version": (0, 6, 1),
     "blender": (5, 1, 0),
     "location": "Material Properties > Hair Tool Unreal Bridge",
     "description": "Synchronize Hair Tool RGB color layers, blend modes and textures with Unreal",
@@ -18,10 +18,19 @@ from . import operators, properties, ui
 CLASSES = properties.CLASSES + operators.CLASSES + ui.CLASSES
 
 
+def initialize_export_ao_after_register():
+    """Run after Blender releases the restricted registration data context."""
+    from . import deformer_sync
+
+    deformer_sync.initialize_existing_export_ao_settings()
+
+
 @persistent
 def migrate_bridge_ui_on_load(_unused):
     """Upgrade saved bridge node interfaces without touching Hair Tool itself."""
-    from . import nodes, schema
+    from . import deformer_sync, nodes, schema
+
+    deformer_sync.initialize_existing_export_ao_settings()
 
     for material_name in schema.TARGET_TEXTURE_SETS:
         material = bpy.data.materials.get(material_name)
@@ -40,9 +49,13 @@ def register():
     bpy.types.Object.htue_ao_settings = PointerProperty(type=properties.HTUE_AOBakeSettings)
     if migrate_bridge_ui_on_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(migrate_bridge_ui_on_load)
+    if not bpy.app.timers.is_registered(initialize_export_ao_after_register):
+        bpy.app.timers.register(initialize_export_ao_after_register, first_interval=0.0)
 
 
 def unregister():
+    if bpy.app.timers.is_registered(initialize_export_ao_after_register):
+        bpy.app.timers.unregister(initialize_export_ao_after_register)
     if migrate_bridge_ui_on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(migrate_bridge_ui_on_load)
     if hasattr(bpy.types.Material, "htue_settings"):

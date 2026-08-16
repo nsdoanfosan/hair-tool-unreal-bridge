@@ -27,7 +27,6 @@ def _draw_ao_workflow(layout, context):
         layout.label(text="Select Hair Tool data under an export Empty", icon="INFO")
         return
 
-    deformer_sync.ao_bake_configuration(root)
     settings = root.htue_ao_settings
     layout.label(text=f"Asset: {root.name}", icon="OUTLINER_OB_EMPTY")
     mode = layout.row(align=True)
@@ -353,9 +352,17 @@ class HTUE_PT_SidebarExport(bpy.types.Panel):
                 layout.label(text="Linked to Export collection; no Empty target", icon="LINKED")
             else:
                 layout.label(text="Not linked to Export collection", icon="UNLINKED")
-            if not deformer_sync.has_ao_modifier(active):
+            bridge_ao = deformer_sync.bridge_ao_modifiers(active)
+            if bridge_ao:
+                if target is not None and target.htue_ao_settings.evaluation_mode == "COMBINED":
+                    layout.label(text="AO: joined preview/export (live fallback off)", icon="MOD_NORMALEDIT")
+                else:
+                    layout.label(text="AO: Bridge fallback for this output", icon="CHECKMARK")
+            elif deformer_sync.has_ao_modifier(active):
+                layout.label(text="AO: native Hair Tool modifier", icon="CHECKMARK")
+            else:
                 layout.label(
-                    text="Per-system AO unavailable (export still allowed)",
+                    text="AO: unavailable (link adds Per System fallback)",
                     icon="INFO",
                 )
 
@@ -399,7 +406,7 @@ class HTUE_PT_SidebarExport(bpy.types.Panel):
             text=remove_text,
             icon="UNLINKED",
         )
-        layout.label(text="Collection link only - Send to Unreal is not run")
+        layout.label(text="Organizes hierarchy + Export collection; no Unreal send")
 
 
 class HTUE_PT_SidebarAO(bpy.types.Panel):
