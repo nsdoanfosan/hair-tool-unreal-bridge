@@ -259,6 +259,19 @@ def _build_group(group, settings):
         i["System Blend Mode"],
     )
 
+    # Unreal's hair master uses one shared Random/ID source for Root random,
+    # Tip random, and the ID tint. ID Map Influence selects between Hair
+    # Tool's evaluated Random attribute and IRD.R for all three consumers.
+    # Keeping this driver shared is important: otherwise Root/Tip can display
+    # one mask in Blender while the same material uses IRD.R in Unreal.
+    id_driver = _mix_float(
+        group,
+        i["ID Map Influence"],
+        i["Random"],
+        ird_r,
+        name="HTUE ID Driver",
+    )
+
     # HairShaderMain's Map Range uses safe division. With From Min and From
     # Max both zero, Root Range=0 resolves to To Min (1), not to a disabled
     # mask. Preserve that behavior so Set Factor continues to match Hair Tool.
@@ -279,7 +292,13 @@ def _build_group(group, settings):
         root_ranged_mask,
         name="HTUE Root Range Zero Is Full",
     )
-    root_random_value = _math(group, "ADD", i["Random"], i["HT Root Random Brightness"])
+    root_random_value = _math(
+        group,
+        "ADD",
+        id_driver,
+        i["HT Root Random Brightness"],
+        name="HTUE Root Random Value",
+    )
     root_random = _mix_float(group, i["HT Root Random Influence"], one, root_random_value)
     root_texture = _mix_float(group, i["Root Map Influence"], one, ird_g)
     root_weight = _math(group, "MULTIPLY", root_mask, i["HT Root Mix"])
@@ -298,7 +317,13 @@ def _build_group(group, settings):
     tip_delta = _math(group, "SUBTRACT", i["Factor"], tip_start)
     tip_safe = _math(group, "MAXIMUM", i["HT Tip Range"], eps)
     tip_mask = _clamp01(group, _math(group, "DIVIDE", tip_delta, tip_safe))
-    tip_random_value = _math(group, "ADD", i["Random"], i["HT Tip Random Brightness"])
+    tip_random_value = _math(
+        group,
+        "ADD",
+        id_driver,
+        i["HT Tip Random Brightness"],
+        name="HTUE Tip Random Value",
+    )
     tip_random = _mix_float(group, i["HT Tip Random Influence"], one, tip_random_value)
     tip_texture_mask = _math(group, "SUBTRACT", one, ird_g)
     tip_texture = _mix_float(group, i["Tip Map Influence"], one, tip_texture_mask)
@@ -314,7 +339,6 @@ def _build_group(group, settings):
         i["Tip Blend Mode"],
     )
 
-    id_driver = _mix_float(group, i["ID Map Influence"], i["Random"], ird_r)
     id_weight = _clamp01(group, _math(group, "MULTIPLY", id_driver, i["ID Tint Influence"]))
     color = _blend(
         group,
@@ -405,8 +429,8 @@ def initialise_settings(material, shader):
 
 
 def _save_legacy_state(material, shader):
-    if material.get(schema.LEGACY_STATE_PROPERTY):
-        return
+    raw_state = material.get(schema.LEGACY_STATE_PROPERTY)
+    state = json.loads(str(raw_state)) if raw_state else None
     socket_names = (
         "Base Color",
         "Root Color Mix Factor",
@@ -415,24 +439,95 @@ def _save_legacy_state(material, shader):
         "Depth Mix Factor",
         "AO Mix Factor",
     )
-    state = {"shader_node": shader.name, "sockets": {}}
-    for name in socket_names:
-        socket = shader.inputs.get(name)
+    if state is None:
+        state = {"shader_node": shader.name, "sockets": {}}
+        for name in socket_names:
+            socket = shader.inputs.get(name)
+            if socket is None:
+                continue
+            default = socket.default_value
+            if hasattr(default, "__len__") and not isinstance(default, str):
+                default = [float(component) for component in default]
+            else:
+                default = float(default)
+            state["sockets"][name] = {
+                "default": default,
+                "links": [
+                    {"node": link.from_node.name, "socket": link.from_socket.name}
+                    for link in socket.links
+                ],
+            }
+    if "backface_normals" not in state:
+        state["backface_normals"] = _capture_backface_normal_state(material)
+    material[schema.LEGACY_STATE_PROPERTY] = json.dumps(state, sort_keys=True)
+
+
+def _hair_tool_normal_nodes(material):
+    tree = material.node_tree
+    if tree is None:
+        return []
+    return [
+        node
+        for node in tree.nodes
+        if node.bl_idname == "ShaderNodeGroup"
+        and node.node_tree is not None
+        and node.node_tree.name == schema.HAIR_TOOL_NORMAL_GROUP
+        and node.inputs.get(schema.BACKFACE_NORMAL_INPUT) is not None
+    ]
+
+
+def _capture_backface_normal_state(material):
+    result = []
+    for node in _hair_tool_normal_nodes(material):
+        socket = node.inputs[schema.BACKFACE_NORMAL_INPUT]
+        result.append(
+            {
+                "node": node.name,
+                "default": float(socket.default_value),
+                "links": [
+                    {"node": link.from_node.name, "socket": link.from_socket.name}
+                    for link in socket.links
+                ],
+            }
+        )
+    return result
+
+
+def _set_unreal_backface_normals(material):
+    """Match Unreal two-sided shading without editing Hair Tool's node group."""
+    changed = 0
+    for node in _hair_tool_normal_nodes(material):
+        socket = node.inputs[schema.BACKFACE_NORMAL_INPUT]
+        # Preserve authored drivers. The stock Hair Tool socket is unlinked and
+        # uses 0.5, which collapses backface normals to the zero vector.
+        if socket.is_linked:
+            continue
+        target = schema.UNREAL_BACKFACE_NORMAL_VALUE
+        if abs(float(socket.default_value) - target) > 1.0e-7:
+            socket.default_value = target
+            changed += 1
+    return changed
+
+
+def _restore_backface_normal_state(material, state):
+    tree = material.node_tree
+    if tree is None:
+        return
+    for item in state.get("backface_normals") or []:
+        node = tree.nodes.get(item.get("node"))
+        socket = node.inputs.get(schema.BACKFACE_NORMAL_INPUT) if node else None
         if socket is None:
             continue
-        default = socket.default_value
-        if hasattr(default, "__len__") and not isinstance(default, str):
-            default = [float(component) for component in default]
-        else:
-            default = float(default)
-        state["sockets"][name] = {
-            "default": default,
-            "links": [
-                {"node": link.from_node.name, "socket": link.from_socket.name}
-                for link in socket.links
-            ],
-        }
-    material[schema.LEGACY_STATE_PROPERTY] = json.dumps(state, sort_keys=True)
+        for link in list(socket.links):
+            tree.links.remove(link)
+        socket.default_value = float(item.get("default", socket.default_value))
+        for link_state in item.get("links") or []:
+            source_node = tree.nodes.get(link_state.get("node"))
+            source_socket = (
+                source_node.outputs.get(link_state.get("socket")) if source_node else None
+            )
+            if source_socket is not None:
+                tree.links.new(source_socket, socket)
 
 
 def _image(texture_root, texture_set, parameter_name):
@@ -645,6 +740,7 @@ def setup_material(material):
     if not settings.initialized:
         initialise_settings(material, shader)
     _save_legacy_state(material, shader)
+    _set_unreal_backface_normals(material)
     from . import deformer_sync
 
     ao_vertex_available = deformer_sync.has_evaluated_source_attribute(material, "AO")
@@ -716,6 +812,26 @@ def sync_material(material):
         _sync_material_field_to_stack(settings, stack, field)
 
 
+def refresh_deformer_availability(material):
+    """Refresh source-presence switches without rebuilding shader groups."""
+    shader = find_hair_shader(material)
+    if shader is None or shader.node_tree is None:
+        return False
+    stack = shader.node_tree.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+    if stack is None:
+        return False
+
+    from . import deformer_sync
+
+    stack.inputs["AO Vertex Available"].default_value = float(
+        deformer_sync.has_evaluated_source_attribute(material, "AO")
+    )
+    stack.inputs["System Attribute Available"].default_value = float(
+        deformer_sync.has_evaluated_source_attribute(material, "SystemColor")
+    )
+    return True
+
+
 def _socket_value_matches(current, target, tolerance=1.0e-7):
     if hasattr(current, "__len__") and not isinstance(current, str):
         return len(current) == len(target) and all(
@@ -784,6 +900,7 @@ def restore_material(material):
                     source_socket = source_node.outputs.get(link_state.get("socket")) if source_node else None
                     if source_socket:
                         tree.links.new(source_socket, socket)
+        _restore_backface_normal_state(material, state)
     raw_augmented = material.get(schema.AUGMENTED_LINKS_PROPERTY)
     for link_state in json.loads(str(raw_augmented)) if raw_augmented else []:
         socket = shader.inputs.get(link_state.get("input")) if shader else None

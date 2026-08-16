@@ -1,6 +1,6 @@
 import bpy
 
-from . import schema
+from . import deformer_sync, schema
 
 
 def _settings_layout(layout):
@@ -12,6 +12,63 @@ def _settings_layout(layout):
 def _properties(layout, settings, names):
     for name in names:
         layout.prop(settings, name)
+
+
+def _active_material(context):
+    material = getattr(context, "material", None)
+    if material is None and context.object is not None:
+        material = context.object.active_material
+    return material
+
+
+def _draw_ao_workflow(layout, context):
+    root = deformer_sync._find_export_root(context.object)
+    if root is None:
+        layout.label(text="Select Hair Tool data under an export Empty", icon="INFO")
+        return
+
+    deformer_sync.ao_bake_configuration(root)
+    settings = root.htue_ao_settings
+    layout.label(text=f"Asset: {root.name}", icon="OUTLINER_OB_EMPTY")
+    mode = layout.row(align=True)
+    mode.prop(settings, "evaluation_mode", expand=True)
+    if settings.evaluation_mode == "PER_SYSTEM":
+        layout.label(text="AO per system, then generated cards are joined")
+    else:
+        layout.label(text="Generated cards are joined, then AO runs once", icon="ERROR")
+
+    values = layout.box()
+    values.use_property_split = True
+    values.prop(settings, "samples")
+    values.prop(settings, "spread_angle")
+    values.prop(settings, "base_color_value")
+    values.prop(settings, "blur_steps")
+    values.prop(settings, "first_bounce_factor")
+    values.prop(settings, "second_bounce_factor")
+    values.prop(settings, "use_custom_normals")
+
+    state = deformer_sync.combined_ao_preview_state(context.object)
+    if state["exists"]:
+        stats = state["stats"]
+        stale = bool(state["object"].get("_htue_combined_ao_preview_stale"))
+        layout.label(
+            text=(
+                f"Preview: mean {stats.get('mean', 1.0):.3f}  |  "
+                f"median {stats.get('median', 1.0):.3f}"
+            ),
+            icon="ERROR" if stale else "CHECKMARK",
+        )
+        if stale:
+            layout.label(text="Settings changed — refresh preview", icon="FILE_REFRESH")
+        row = layout.row(align=True)
+        row.operator("htue.build_combined_ao_preview", text="Refresh", icon="FILE_REFRESH")
+        row.operator("htue.remove_combined_ao_preview", text="Live Hair Tool", icon="LOOP_BACK")
+    else:
+        layout.operator(
+            "htue.build_combined_ao_preview",
+            text="Build AO Preview (Slower)",
+            icon="MOD_NORMALEDIT",
+        )
 
 
 class _HTUEPanel:
@@ -48,6 +105,7 @@ class HTUE_PT_MaterialBridge(_HTUEPanel, bpy.types.Panel):
 
         status = layout.box()
         status.label(text="Hair Tool Deformers drive masks", icon="LINKED")
+        status.label(text="Unreal two-sided backface normals matched")
         status.label(text="Legacy HairShaderMain blending is ignored")
         status.label(text="Base > System > Root > Tip > ID > Depth > AO")
         status.label(text="Unreal contract v3  |  31 synchronized parameters")
@@ -95,7 +153,7 @@ class HTUE_PT_System(_HTUEPanel, bpy.types.Panel):
 
 
 class HTUE_PT_Root(_HTUEPanel, bpy.types.Panel):
-    bl_label = "04  Root  |  Set Factor + IRD.G"
+    bl_label = "04  Root  |  Set Factor + Random/IRD"
     bl_idname = "HTUE_PT_root"
     bl_parent_id = "HTUE_PT_material_bridge"
     bl_options = {"DEFAULT_CLOSED"}
@@ -105,6 +163,7 @@ class HTUE_PT_Root(_HTUEPanel, bpy.types.Panel):
         settings = context.material.htue_settings
         if settings.root_range == 0.0:
             layout.label(text="Range 0 uses the full Root layer (Hair Tool behavior)", icon="INFO")
+        layout.label(text="Random source: Hair Tool Random or IRD.R (ID Map Influence)")
         _properties(layout, settings, (
             "root_color", "root_mix", "root_range", "root_random_influence",
             "root_random_brightness", "root_map_influence", "root_blend_mode",
@@ -112,13 +171,14 @@ class HTUE_PT_Root(_HTUEPanel, bpy.types.Panel):
 
 
 class HTUE_PT_Tip(_HTUEPanel, bpy.types.Panel):
-    bl_label = "05  Tip  |  Set Factor + OneMinus(IRD.G)"
+    bl_label = "05  Tip  |  Set Factor + Random/IRD"
     bl_idname = "HTUE_PT_tip"
     bl_parent_id = "HTUE_PT_material_bridge"
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
         layout = _settings_layout(self.layout)
+        layout.label(text="Random source: Hair Tool Random or IRD.R (ID Map Influence)")
         _properties(layout, context.material.htue_settings, (
             "tip_color", "tip_mix", "tip_range", "tip_random_influence",
             "tip_random_brightness", "tip_map_influence", "tip_blend_mode",
@@ -159,10 +219,63 @@ class HTUE_PT_AO(_HTUEPanel, bpy.types.Panel):
 
     def draw(self, context):
         layout = _settings_layout(self.layout)
+        workflow = layout.box()
+        _draw_ao_workflow(workflow, context)
         _properties(layout, context.material.htue_settings, (
             "ao_strength", "ao_vertex_influence", "ao_texture_influence",
             "ao_color_influence", "ao_blend_mode", "roughness_minimum",
         ))
+
+
+class HTUE_PT_Sidebar(bpy.types.Panel):
+    bl_label = "Hair Tool Unreal Bridge"
+    bl_idname = "HTUE_PT_sidebar"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "HT Unreal"
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None
+
+    def draw(self, context):
+        layout = self.layout
+        material = _active_material(context)
+        root = deformer_sync._find_export_root(context.object)
+        if root is not None:
+            layout.label(text=root.name, icon="OUTLINER_OB_EMPTY")
+        if material is None:
+            layout.label(text="No active hair material", icon="INFO")
+            return
+        layout.label(text=material.name, icon="MATERIAL")
+        if not getattr(material.htue_settings, "initialized", False):
+            layout.operator("htue.setup_active_material", icon="NODETREE")
+            return
+        row = layout.row(align=True)
+        row.operator("htue.refresh_contract", text="Sync Hooks", icon="FILE_REFRESH")
+        row.operator("htue.restore_active_material", text="Restore", icon="LOOP_BACK")
+        layout.label(text="Hair Tool Deformer links remain active", icon="LINKED")
+
+
+class HTUE_PT_SidebarAO(bpy.types.Panel):
+    bl_label = "AO Evaluation & Preview"
+    bl_idname = "HTUE_PT_sidebar_ao"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "HT Unreal"
+    bl_parent_id = "HTUE_PT_sidebar"
+
+    def draw(self, context):
+        layout = self.layout
+        _draw_ao_workflow(layout, context)
+        material = _active_material(context)
+        if material is not None and getattr(material.htue_settings, "initialized", False):
+            box = layout.box()
+            box.use_property_split = True
+            _properties(box, material.htue_settings, (
+                "ao_strength", "ao_vertex_influence", "ao_texture_influence",
+                "ao_color_influence", "ao_blend_mode",
+            ))
 
 
 CLASSES = (
@@ -175,4 +288,6 @@ CLASSES = (
     HTUE_PT_ID,
     HTUE_PT_Depth,
     HTUE_PT_AO,
+    HTUE_PT_Sidebar,
+    HTUE_PT_SidebarAO,
 )

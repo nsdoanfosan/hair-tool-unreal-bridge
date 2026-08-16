@@ -12,6 +12,9 @@ SHADER_CLONE_PREFIX = "HTUE_HairShaderMain"
 INTERNAL_STACK_NODE_NAME = "HTUE Color Stack"
 ORIGINAL_SHADER_GROUP_PROPERTY = "htue_original_shader_group"
 AUGMENTED_LINKS_PROPERTY = "htue_augmented_hair_links"
+HAIR_TOOL_NORMAL_GROUP = "HTool_Normal"
+BACKFACE_NORMAL_INPUT = "Flip Backface Normal"
+UNREAL_BACKFACE_NORMAL_VALUE = 1.0
 
 TARGET_TEXTURE_SETS = {
     "M_HT_Default_Material_01": "Hair_Long_01",

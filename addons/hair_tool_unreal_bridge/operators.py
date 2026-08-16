@@ -1,6 +1,13 @@
 import bpy
 
-from . import contract, nodes, schema
+from . import contract, deformer_sync, nodes, schema
+
+
+def _active_material(context):
+    material = getattr(context, "material", None)
+    if material is None and context.object is not None:
+        material = context.object.active_material
+    return material
 
 
 class HTUE_OT_SetupActiveMaterial(bpy.types.Operator):
@@ -9,7 +16,7 @@ class HTUE_OT_SetupActiveMaterial(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        material = context.material
+        material = _active_material(context)
         if material is None:
             self.report({"ERROR"}, "No active material")
             return {"CANCELLED"}
@@ -53,7 +60,7 @@ class HTUE_OT_RestoreActiveMaterial(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        material = context.material
+        material = _active_material(context)
         if material is None:
             return {"CANCELLED"}
         nodes.restore_material(material)
@@ -66,7 +73,7 @@ class HTUE_OT_RefreshContract(bpy.types.Operator):
     bl_label = "Refresh Unreal Contract"
 
     def execute(self, context):
-        material = context.material
+        material = _active_material(context)
         if material is None or not material.htue_settings.initialized:
             self.report({"ERROR"}, "Set up the active material first")
             return {"CANCELLED"}
@@ -83,9 +90,63 @@ class HTUE_OT_RefreshContract(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class HTUE_OT_BuildCombinedAOPreview(bpy.types.Operator):
+    bl_idname = "htue.build_combined_ao_preview"
+    bl_label = "Build / Refresh AO Preview"
+    bl_description = "Build the joined display mesh with the selected Hair Tool AO mode"
+
+    def execute(self, context):
+        material = _active_material(context)
+        if material is None or not material.htue_settings.initialized:
+            self.report({"ERROR"}, "Set up the active material first")
+            return {"CANCELLED"}
+        try:
+            result = deformer_sync.build_combined_ao_preview(material, context.object)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        for slot in result["preview"].material_slots:
+            if slot.material and getattr(slot.material.htue_settings, "initialized", False):
+                nodes.refresh_deformer_availability(slot.material)
+        stats = result["stats"]
+        mode_name = (
+            "Combined"
+            if stats.get("source") == "combined_export_geometry"
+            else "Per System"
+        )
+        self.report(
+            {"INFO"},
+            f"{mode_name} AO preview: {len(result['sources'])} systems; "
+            f"AO {stats.get('minimum', 1.0):.3f}-{stats.get('maximum', 1.0):.3f}",
+        )
+        return {"FINISHED"}
+
+
+class HTUE_OT_RemoveCombinedAOPreview(bpy.types.Operator):
+    bl_idname = "htue.remove_combined_ao_preview"
+    bl_label = "Return to Live Hair Tool"
+    bl_description = "Remove the cached joined preview and restore editable Hair Tool outputs"
+
+    def execute(self, context):
+        material = _active_material(context)
+        if material is None or not material.htue_settings.initialized:
+            return {"CANCELLED"}
+        result = deformer_sync.remove_combined_ao_preview(context.object)
+        for target in bpy.data.materials:
+            if getattr(target.htue_settings, "initialized", False):
+                nodes.refresh_deformer_availability(target)
+        self.report(
+            {"INFO"},
+            f"Restored {len(result['restored'])} live Hair Tool systems",
+        )
+        return {"FINISHED"}
+
+
 CLASSES = (
     HTUE_OT_SetupActiveMaterial,
     HTUE_OT_SetupFourMaterials,
     HTUE_OT_RestoreActiveMaterial,
     HTUE_OT_RefreshContract,
+    HTUE_OT_BuildCombinedAOPreview,
+    HTUE_OT_RemoveCombinedAOPreview,
 )
