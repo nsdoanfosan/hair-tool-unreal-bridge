@@ -12,6 +12,13 @@ assert addon.migrate_bridge_ui_on_load in bpy.app.handlers.load_post
 assert hasattr(bpy.types.Object, "htue_ao_settings")
 assert bpy.types.HTUE_PT_sidebar.bl_category == "HT Unreal"
 assert bpy.types.HTUE_PT_sidebar_ao.bl_parent_id == "HTUE_PT_sidebar"
+assert bpy.types.HTUE_PT_sidebar_maintenance.bl_parent_id == "HTUE_PT_sidebar"
+assert bpy.types.HTUE_PT_sidebar_maintenance.bl_options == {"DEFAULT_CLOSED"}
+assert bpy.types.HTUE_OT_refresh_contract.bl_label == "Refresh Hair Tool Connections"
+assert (
+    bpy.types.HTUE_OT_restore_active_material.bl_label
+    == "Remove Bridge and Restore Original Material"
+)
 
 
 def input_socket(tree, name, socket_type, default):

@@ -56,8 +56,15 @@ class HTUE_OT_SetupFourMaterials(bpy.types.Operator):
 
 class HTUE_OT_RestoreActiveMaterial(bpy.types.Operator):
     bl_idname = "htue.restore_active_material"
-    bl_label = "Restore Original Hair Tool Nodes"
+    bl_label = "Remove Bridge and Restore Original Material"
+    bl_description = (
+        "Remove this material's Unreal Bridge shader additions and restore "
+        "the original Hair Tool node group, socket values, and links"
+    )
     bl_options = {"REGISTER", "UNDO"}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
 
     def execute(self, context):
         material = _active_material(context)
@@ -70,7 +77,11 @@ class HTUE_OT_RestoreActiveMaterial(bpy.types.Operator):
 
 class HTUE_OT_RefreshContract(bpy.types.Operator):
     bl_idname = "htue.refresh_contract"
-    bl_label = "Refresh Unreal Contract"
+    bl_label = "Refresh Hair Tool Connections"
+    bl_description = (
+        "Recheck Hair Tool attributes and refresh the Blender shader hooks "
+        "and Unreal export contract; this does not export to Unreal"
+    )
 
     def execute(self, context):
         material = _active_material(context)

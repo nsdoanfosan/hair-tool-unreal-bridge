@@ -112,9 +112,30 @@ class HTUE_PT_MaterialBridge(_HTUEPanel, bpy.types.Panel):
         status.label(text="Legacy HairShaderMain blending is ignored")
         status.label(text="Base > System > Root > Tip > ID > Depth > AO")
         status.label(text="Unreal contract v3  |  31 synchronized parameters")
-        row = layout.row(align=True)
-        row.operator("htue.refresh_contract", text="Refresh Hooks + Unreal", icon="FILE_REFRESH")
-        row.operator("htue.restore_active_material", text="Restore", icon="LOOP_BACK")
+        layout.operator(
+            "htue.refresh_contract",
+            text="Refresh Hair Tool Connections",
+            icon="FILE_REFRESH",
+        )
+        layout.label(text="Checks attributes and Unreal export data; does not export")
+
+
+class HTUE_PT_Maintenance(_HTUEPanel, bpy.types.Panel):
+    bl_label = "Maintenance / Advanced"
+    bl_idname = "HTUE_PT_maintenance"
+    bl_parent_id = "HTUE_PT_material_bridge"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(text="Use only to stop using the bridge", icon="INFO")
+        box.operator(
+            "htue.restore_active_material",
+            text="Remove Bridge / Restore Original",
+            icon="LOOP_BACK",
+        )
+        box.label(text="Hair Tool deformers and Unreal assets are not deleted")
 
 
 class HTUE_PT_Source(_HTUEPanel, bpy.types.Panel):
@@ -254,10 +275,41 @@ class HTUE_PT_Sidebar(bpy.types.Panel):
         if not getattr(material.htue_settings, "initialized", False):
             layout.operator("htue.setup_active_material", icon="NODETREE")
             return
-        row = layout.row(align=True)
-        row.operator("htue.refresh_contract", text="Sync Hooks", icon="FILE_REFRESH")
-        row.operator("htue.restore_active_material", text="Restore", icon="LOOP_BACK")
+        layout.operator(
+            "htue.refresh_contract",
+            text="Refresh Connections",
+            icon="FILE_REFRESH",
+        )
+        layout.label(text="Rechecks Hair Tool attributes; does not export")
         layout.label(text="Hair Tool Deformer links remain active", icon="LINKED")
+
+
+class HTUE_PT_SidebarMaintenance(bpy.types.Panel):
+    bl_label = "Maintenance / Advanced"
+    bl_idname = "HTUE_PT_sidebar_maintenance"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "HT Unreal"
+    bl_parent_id = "HTUE_PT_sidebar"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context):
+        material = _active_material(context)
+        return bool(
+            material
+            and getattr(material.htue_settings, "initialized", False)
+        )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Use only to stop using the bridge", icon="INFO")
+        layout.operator(
+            "htue.restore_active_material",
+            text="Remove Bridge / Restore Original",
+            icon="LOOP_BACK",
+        )
+        layout.label(text="Deformers and Unreal assets stay intact")
 
 
 class HTUE_PT_SidebarAO(bpy.types.Panel):
@@ -283,6 +335,7 @@ class HTUE_PT_SidebarAO(bpy.types.Panel):
 
 CLASSES = (
     HTUE_PT_MaterialBridge,
+    HTUE_PT_Maintenance,
     HTUE_PT_Source,
     HTUE_PT_Base,
     HTUE_PT_System,
@@ -292,5 +345,6 @@ CLASSES = (
     HTUE_PT_Depth,
     HTUE_PT_AO,
     HTUE_PT_Sidebar,
+    HTUE_PT_SidebarMaintenance,
     HTUE_PT_SidebarAO,
 )
