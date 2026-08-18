@@ -10,7 +10,11 @@ from hair_tool_unreal_bridge import contract, deformer_sync, nodes, operators, s
 
 assert addon.migrate_bridge_ui_on_load in bpy.app.handlers.load_post
 assert hasattr(bpy.types.Object, "htue_ao_settings")
-assert bpy.types.HTUE_PT_sidebar.bl_category == "HT Unreal"
+assert bpy.types.HTUE_PT_sidebar.bl_category == "Unreal Bridge"
+assert hasattr(bpy.types.Object, "umb_layerblend_preview")
+assert hasattr(bpy.types.Scene, "umb_layerblend_auto_sync")
+assert bpy.app.timers.is_registered(addon.layerblend_preview.auto_sync_timer)
+assert bpy.types.UMB_PT_layerblend_height_preview.bl_category == "Unreal Bridge"
 assert bpy.types.HTUE_PT_sidebar_ao.bl_parent_id == "HTUE_PT_sidebar"
 assert bpy.types.HTUE_PT_sidebar_export.bl_parent_id == "HTUE_PT_sidebar"
 assert bpy.types.HTUE_PT_sidebar_maintenance.bl_parent_id == "HTUE_PT_sidebar"
