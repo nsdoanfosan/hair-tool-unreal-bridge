@@ -88,7 +88,7 @@ class _HTUEPanel:
 
 
 class HTUE_PT_MaterialBridge(_HTUEPanel, bpy.types.Panel):
-    bl_label = "Hair Tool Unreal Bridge"
+    bl_label = "Unreal Material Bridge · Hair Tool"
     bl_idname = "HTUE_PT_material_bridge"
 
     def draw_header(self, context):
@@ -251,11 +251,11 @@ class HTUE_PT_AO(_HTUEPanel, bpy.types.Panel):
 
 
 class HTUE_PT_Sidebar(bpy.types.Panel):
-    bl_label = "Hair Tool Unreal Bridge"
+    bl_label = "Hair Tool Material Sync"
     bl_idname = "HTUE_PT_sidebar"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "HT Unreal"
+    bl_category = "Unreal Bridge"
 
     @classmethod
     def poll(cls, context):
@@ -288,7 +288,7 @@ class HTUE_PT_SidebarMaintenance(bpy.types.Panel):
     bl_idname = "HTUE_PT_sidebar_maintenance"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "HT Unreal"
+    bl_category = "Unreal Bridge"
     bl_parent_id = "HTUE_PT_sidebar"
     bl_options = {"DEFAULT_CLOSED"}
 
@@ -316,7 +316,7 @@ class HTUE_PT_SidebarExport(bpy.types.Panel):
     bl_idname = "HTUE_PT_sidebar_export"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "HT Unreal"
+    bl_category = "Unreal Bridge"
     bl_parent_id = "HTUE_PT_sidebar"
     bl_order = 0
 
@@ -414,7 +414,7 @@ class HTUE_PT_SidebarAO(bpy.types.Panel):
     bl_idname = "HTUE_PT_sidebar_ao"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "HT Unreal"
+    bl_category = "Unreal Bridge"
     bl_parent_id = "HTUE_PT_sidebar"
 
     def draw(self, context):
