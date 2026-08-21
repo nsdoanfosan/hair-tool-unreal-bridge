@@ -34,11 +34,28 @@ _AUTO_SYNC_RUNNING = False
 _AUTO_SYNC_LAST_RESULT = {}
 
 
+def _is_preview_modifier(modifier):
+    if modifier.type != "NODES":
+        return False
+    node_group = getattr(modifier, "node_group", None)
+    return bool(
+        modifier.get(MODIFIER_MARKER)
+        or (node_group and node_group.get(GROUP_MARKER))
+        or modifier.name == MODIFIER_NAME
+        or modifier.name.startswith(f"{MODIFIER_NAME}.")
+    )
+
+
+def _preview_modifiers(obj):
+    return [modifier for modifier in obj.modifiers if _is_preview_modifier(modifier)]
+
+
 def _preview_modifier(obj):
-    for modifier in obj.modifiers:
-        if modifier.type == "NODES" and bool(modifier.get(MODIFIER_MARKER)):
-            return modifier
-    return None
+    modifiers = _preview_modifiers(obj)
+    if not modifiers:
+        return None
+    marked = [modifier for modifier in modifiers if modifier.get(MODIFIER_MARKER)]
+    return (marked or modifiers)[-1]
 
 
 def _layerblend_slots(obj):
@@ -492,6 +509,36 @@ def _remove_orphan_group(group, object_name=""):
     return True
 
 
+def _consolidate_preview_modifiers(obj):
+    """Return one preview modifier and remove stale saved or repeated copies.
+
+    Blender does not reliably preserve custom properties on modifiers through
+    every duplication/cache workflow.  Fall back to the generated node-group
+    marker and stable modifier name, preferring the newest explicitly marked
+    modifier when one exists.
+    """
+    modifiers = _preview_modifiers(obj)
+    if not modifiers:
+        return None, 0
+
+    keeper = _preview_modifier(obj)
+    removed_groups = []
+    removed = 0
+    for modifier in modifiers:
+        if modifier == keeper:
+            continue
+        removed_groups.append(getattr(modifier, "node_group", None))
+        obj.modifiers.remove(modifier)
+        removed += 1
+
+    keeper.name = MODIFIER_NAME
+    keeper[MODIFIER_MARKER] = True
+    keeper.show_in_editmode = True
+    for group in removed_groups:
+        _remove_orphan_group(group, obj.name)
+    return keeper, removed
+
+
 def sync_preview(
     obj,
     *,
@@ -584,7 +631,7 @@ def sync_preview(
         raise RuntimeError(f"{obj.name} has no previewable M_LayerBlend slot. {reasons}")
 
     group = _build_node_group(obj, entries, uv_map, color_attribute)
-    modifier = _preview_modifier(obj)
+    modifier, _duplicates_removed = _consolidate_preview_modifiers(obj)
     old_group = modifier.node_group if modifier else None
     if modifier is None:
         modifier = obj.modifiers.new(name=MODIFIER_NAME, type="NODES")
@@ -593,12 +640,7 @@ def sync_preview(
     modifier[MODIFIER_MARKER] = True
     modifier.show_viewport = bool(settings.enabled)
     modifier.show_render = False
-    # Keep the authored mesh visible in Edit Mode. Geometry Nodes evaluates a
-    # split/displaced result that cannot carry Blender's original face-selection
-    # overlay reliably, so the Height approximation is intentionally Object
-    # Mode-only.
-    modifier.show_in_editmode = False
-    modifier.show_on_cage = False
+    modifier.show_in_editmode = True
     obj.modifiers.move(obj.modifiers.find(modifier.name), len(obj.modifiers) - 1)
     if old_group != group:
         _remove_orphan_group(old_group, obj.name)
@@ -620,18 +662,19 @@ def sync_preview(
 
 
 def remove_preview(obj):
-    modifier = _preview_modifier(obj)
-    group = modifier.node_group if modifier else None
-    if modifier:
+    modifiers = _preview_modifiers(obj)
+    groups = [getattr(modifier, "node_group", None) for modifier in modifiers]
+    for modifier in modifiers:
         obj.modifiers.remove(modifier)
-    _remove_orphan_group(group, obj.name)
+    for group in groups:
+        _remove_orphan_group(group, obj.name)
     if layerblend_contract.OBJECT_CONTRACT_PROPERTY in obj:
         del obj[layerblend_contract.OBJECT_CONTRACT_PROPERTY]
     if SOURCE_SIGNATURE_PROPERTY in obj:
         del obj[SOURCE_SIGNATURE_PROPERTY]
     if SYNC_ERROR_PROPERTY in obj:
         del obj[SYNC_ERROR_PROPERTY]
-    return modifier is not None
+    return bool(modifiers)
 
 
 def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
@@ -644,6 +687,7 @@ def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
             "synchronized": 0,
             "unchanged": 0,
             "removed": 0,
+            "duplicates_removed": 0,
             "direct_objects": 0,
             "instanced_objects": 0,
             "instanced_collections": 0,
@@ -660,6 +704,7 @@ def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
         "synchronized": 0,
         "unchanged": 0,
         "removed": 0,
+        "duplicates_removed": 0,
         "linked_skipped": 0,
         "group_pro_hosts_skipped": 0,
         "errors": [],
@@ -669,7 +714,8 @@ def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
     for obj in sync_objects:
         if obj.type != "MESH":
             continue
-        modifier = _preview_modifier(obj)
+        modifier, duplicates_removed = _consolidate_preview_modifiers(obj)
+        summary["duplicates_removed"] += duplicates_removed
         if _is_gpro_group_host(obj):
             # The referenced Collection members receive the preview. Applying it
             # again to the host after GPro_Instance would double the displacement.
@@ -679,11 +725,6 @@ def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
                 summary["removed"] += 1
             continue
         slots = _layerblend_slots(obj)
-        if modifier:
-            # Apply the current display policy even when the material signature
-            # is unchanged and the cached node group can be reused.
-            modifier.show_in_editmode = False
-            modifier.show_on_cage = False
         if not slots:
             if modifier and obj.is_editable:
                 remove_preview(obj)
@@ -810,12 +851,11 @@ def restore_height_previews(states):
         for state in states or []:
             obj = bpy.data.objects.get(str(state.get("object") or ""))
             modifier = obj.modifiers.get(str(state.get("modifier") or "")) if obj else None
-            if modifier is None or not modifier.get(MODIFIER_MARKER):
+            if modifier is None or not _is_preview_modifier(modifier):
                 continue
             modifier.show_viewport = bool(state.get("show_viewport", True))
             modifier.show_render = bool(state.get("show_render", False))
-            modifier.show_in_editmode = False
-            modifier.show_on_cage = False
+            modifier.show_in_editmode = True
             restored.append(obj.name)
     finally:
         count = max(
@@ -832,12 +872,11 @@ def restore_height_previews(states):
 def _update_enabled(self, _context):
     obj = self.id_data
     if isinstance(obj, bpy.types.Object):
-        modifier = _preview_modifier(obj)
+        modifier, _duplicates_removed = _consolidate_preview_modifiers(obj)
         if modifier:
             modifier.show_viewport = bool(self.enabled)
             modifier.show_render = False
-            modifier.show_in_editmode = False
-            modifier.show_on_cage = False
+            modifier.show_in_editmode = True
 
 
 def update_scene_auto_sync(scene, _context):

@@ -134,7 +134,23 @@ with tempfile.TemporaryDirectory(prefix="umb_layerblend_preview_") as temporary:
     obj.select_set(True)
     second.select_set(False)
 
-    before_modifier_types = [modifier.type for modifier in obj.modifiers]
+    # Saved files and Group Pro cache copies can lose modifier custom
+    # properties.  Name and generated-group markers must still identify and
+    # consolidate those legacy preview modifiers.
+    legacy_group_a = bpy.data.node_groups.new("LegacyPreviewA", "GeometryNodeTree")
+    legacy_group_a[layerblend_preview.GROUP_MARKER] = True
+    legacy_a = obj.modifiers.new(layerblend_preview.MODIFIER_NAME, "NODES")
+    legacy_a.node_group = legacy_group_a
+    legacy_group_b = bpy.data.node_groups.new("LegacyPreviewB", "GeometryNodeTree")
+    legacy_group_b[layerblend_preview.GROUP_MARKER] = True
+    legacy_b = obj.modifiers.new(layerblend_preview.MODIFIER_NAME, "NODES")
+    legacy_b.node_group = legacy_group_b
+
+    before_modifier_types = [
+        modifier.type
+        for modifier in obj.modifiers
+        if modifier not in {legacy_a, legacy_b}
+    ]
     summary = layerblend_preview.sync_scene_previews(force=True)
     assert grouped.name not in bpy.context.scene.objects
     assert summary["candidates"] == 3
@@ -144,6 +160,7 @@ with tempfile.TemporaryDirectory(prefix="umb_layerblend_preview_") as temporary:
     assert summary["group_pro_hosts"] == 1
     assert summary["group_pro_hosts_skipped"] == 1
     assert summary["removed"] == 1
+    assert summary["duplicates_removed"] == 1
     assert not summary["errors"]
     contract_data = layerblend_contract.loads_contract(
         obj[layerblend_contract.OBJECT_CONTRACT_PROPERTY]
@@ -159,10 +176,9 @@ with tempfile.TemporaryDirectory(prefix="umb_layerblend_preview_") as temporary:
     assert modifier.node_group == grouped_modifier.node_group
     assert modifier.show_viewport
     assert not modifier.show_render
-    assert not modifier.show_in_editmode
-    assert not modifier.show_on_cage
-    assert not second_modifier.show_in_editmode
-    assert not second_modifier.show_on_cage
+    assert modifier.show_in_editmode
+    assert second_modifier.show_in_editmode
+    assert len(layerblend_preview._preview_modifiers(obj)) == 1
     assert [m.type for m in obj.modifiers if m != modifier] == before_modifier_types
     assert not any(m.type == "SUBSURF" for m in obj.modifiers)
     assert contract_data["preview_only"]
@@ -202,8 +218,24 @@ with tempfile.TemporaryDirectory(prefix="umb_layerblend_preview_") as temporary:
     assert second_modifier.show_viewport
     assert grouped_modifier.show_viewport
     assert not modifier.show_render
-    assert not modifier.show_in_editmode
-    assert not modifier.show_on_cage
+    assert modifier.show_in_editmode
+
+    modifier.show_on_cage = True
+    layerblend_preview.sync_scene_previews(force=True)
+    assert modifier.show_in_editmode
+    assert modifier.show_on_cage
+
+    duplicate = obj.modifiers.new(layerblend_preview.MODIFIER_NAME, "NODES")
+    duplicate.node_group = modifier.node_group
+    assert len(layerblend_preview._preview_modifiers(obj)) == 2
+    modifier.show_in_editmode = False
+    keeper, duplicates_removed = layerblend_preview._consolidate_preview_modifiers(obj)
+    assert keeper == modifier
+    assert duplicates_removed == 1
+    assert modifier.show_in_editmode
+
+    duplicate = obj.modifiers.new(layerblend_preview.MODIFIER_NAME, "NODES")
+    duplicate.node_group = modifier.node_group
 
     assert layerblend_preview.remove_preview(obj)
     assert layerblend_preview._preview_modifier(obj) is None
