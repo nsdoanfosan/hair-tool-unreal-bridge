@@ -1,6 +1,6 @@
 import bpy
 
-from . import deformer_sync, schema
+from . import deformer_sync, profile_sync, schema
 
 
 def _settings_layout(layout):
@@ -111,6 +111,26 @@ class HTUE_PT_MaterialBridge(_HTUEPanel, bpy.types.Panel):
         status.label(text="Legacy HairShaderMain blending is ignored")
         status.label(text="Base > System > Root > Tip > ID > Depth > AO")
         status.label(text="Unreal contract v3  |  31 synchronized parameters")
+        profile_icon = {
+            "SYNCED": "CHECKMARK",
+            "PENDING": "TIME",
+            "CONFLICT": "ERROR",
+            "ERROR": "ERROR",
+        }.get(settings.profile_sync_status, "INFO")
+        status.label(
+            text=(
+                f"Shared profile r{settings.profile_revision}  |  "
+                f"{settings.profile_sync_status.title()}"
+            ),
+            icon=profile_icon,
+        )
+        if settings.profile_sync_error:
+            status.label(text=settings.profile_sync_error, icon="ERROR")
+        layout.operator(
+            "htue.sync_shared_profile",
+            text="Sync Shared Hair Profile Now",
+            icon="FILE_REFRESH",
+        )
         layout.operator(
             "htue.refresh_contract",
             text="Refresh Hair Tool Connections",
@@ -145,8 +165,19 @@ class HTUE_PT_Source(_HTUEPanel, bpy.types.Panel):
 
     def draw(self, context):
         layout = _settings_layout(self.layout)
-        layout.prop(context.material.htue_settings, "texture_set")
-        layout.prop(context.material.htue_settings, "texture_root")
+        material = context.material
+        settings = material.htue_settings
+        shared = layout.box()
+        shared.use_property_split = True
+        shared.label(text="Shared Hair Profile", icon="LINKED")
+        registry = profile_sync.registry_path(material)
+        shared.label(text=f"Profile: {settings.profile_id[:8] or 'not assigned'}")
+        shared.label(text=f"Revision: {settings.profile_revision}")
+        shared.prop(settings, "profile_registry_path")
+        if not settings.profile_registry_path and registry is not None:
+            shared.label(text=f"Auto: {registry}")
+        layout.prop(settings, "texture_set")
+        layout.prop(settings, "texture_root")
 
 
 class HTUE_PT_Base(_HTUEPanel, bpy.types.Panel):

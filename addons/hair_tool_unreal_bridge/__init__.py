@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Unreal Material Bridge",
     "author": "PARK / OpenAI Codex",
-    "version": (0, 8, 0),
+    "version": (0, 9, 0),
     "blender": (5, 1, 0),
     "location": "3D View > Unreal Bridge; Material Properties > Unreal Material Bridge",
     "description": "Synchronize Hair Tool materials and preview M_LayerBlend height from Unreal",
@@ -12,13 +12,15 @@ import bpy
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, PointerProperty
 
-from . import layerblend_preview, operators, properties, ui
+from . import export_masks, layerblend_preview, operators, profile_sync, properties, ui
 
 
 CLASSES = (
     properties.CLASSES
     + operators.CLASSES
+    + export_masks.OPERATOR_CLASSES
     + ui.CLASSES
+    + export_masks.PANEL_CLASSES
     + layerblend_preview.CLASSES
 )
 
@@ -28,24 +30,32 @@ def initialize_export_ao_after_register():
     from . import deformer_sync
 
     deformer_sync.initialize_existing_export_ao_settings()
+    profile_sync.on_load()
+    export_masks.install_runtime_integration()
 
 
 @persistent
 def migrate_bridge_ui_on_load(_unused):
     """Upgrade saved bridge node interfaces without touching Hair Tool itself."""
-    from . import deformer_sync, nodes, schema
+    from . import deformer_sync, nodes
 
     deformer_sync.initialize_existing_export_ao_settings()
 
-    for material_name in schema.TARGET_TEXTURE_SETS:
-        material = bpy.data.materials.get(material_name)
-        if material is None or not getattr(material.htue_settings, "initialized", False):
+    for material in bpy.data.materials:
+        if not getattr(material.htue_settings, "initialized", False):
             continue
         try:
             nodes.setup_material(material)
         except Exception as exc:
-            print(f"HTUE UI migration skipped for {material_name}: {exc}")
+            print(f"HTUE UI migration skipped for {material.name}: {exc}")
+    profile_sync.on_load()
+    export_masks.install_runtime_integration()
     layerblend_preview.notify_materials_synchronized(immediate=False)
+
+
+@persistent
+def flush_profiles_before_save(_unused):
+    profile_sync.flush_pending(force=True)
 
 
 def register():
@@ -67,17 +77,24 @@ def register():
     )
     if migrate_bridge_ui_on_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(migrate_bridge_ui_on_load)
+    if flush_profiles_before_save not in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.append(flush_profiles_before_save)
     if not bpy.app.timers.is_registered(initialize_export_ao_after_register):
         bpy.app.timers.register(initialize_export_ao_after_register, first_interval=0.0)
+    profile_sync.register_auto_sync()
     layerblend_preview.register_auto_sync()
 
 
 def unregister():
+    export_masks.remove_runtime_integration()
     layerblend_preview.unregister_auto_sync()
+    profile_sync.unregister_auto_sync()
     if bpy.app.timers.is_registered(initialize_export_ao_after_register):
         bpy.app.timers.unregister(initialize_export_ao_after_register)
     if migrate_bridge_ui_on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(migrate_bridge_ui_on_load)
+    if flush_profiles_before_save in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.remove(flush_profiles_before_save)
     if hasattr(bpy.types.Material, "htue_settings"):
         del bpy.types.Material.htue_settings
     if hasattr(bpy.types.Object, "htue_ao_settings"):

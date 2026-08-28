@@ -71,7 +71,14 @@ class TestHairToolUnrealBridgeSchema(unittest.TestCase):
 
     def test_vertex_and_texture_sources_are_both_declared(self):
         data = schema.build_contract("M_HT_Default_Material_01", settings())
-        self.assertEqual(data["hair_tool"]["vertex_color"]["G"], "Factor / Root-Tip vertex source")
+        self.assertEqual(
+            data["hair_tool"]["vertex_color"]["G"],
+            "ChaosWeight export attribute; neutral fallback 0",
+        )
+        self.assertEqual(
+            data["hair_tool"]["vertex_color"]["R"],
+            "HairPixelDepthOffset export attribute; neutral fallback 1",
+        )
         self.assertIn("IRD Map.G", data["hair_tool"]["texture_channels"])
         self.assertIn("IRD Map.B", data["hair_tool"]["texture_channels"])
         self.assertIn("ORM Map.R", data["hair_tool"]["texture_channels"])

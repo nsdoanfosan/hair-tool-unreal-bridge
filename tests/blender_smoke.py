@@ -5,25 +5,37 @@ import bpy
 addon_utils.enable("hair_tool_unreal_bridge", default_set=False, persistent=False)
 
 import hair_tool_unreal_bridge as addon
-from hair_tool_unreal_bridge import contract, deformer_sync, nodes, operators, schema
+from hair_tool_unreal_bridge import contract, deformer_sync, export_masks, nodes, operators, schema
 
 
 assert addon.migrate_bridge_ui_on_load in bpy.app.handlers.load_post
+assert addon.flush_profiles_before_save in bpy.app.handlers.save_pre
 assert hasattr(bpy.types.Object, "htue_ao_settings")
 assert bpy.types.HTUE_PT_sidebar.bl_category == "Unreal Bridge"
 assert hasattr(bpy.types.Object, "umb_layerblend_preview")
 assert hasattr(bpy.types.Scene, "umb_layerblend_auto_sync")
 assert bpy.app.timers.is_registered(addon.layerblend_preview.auto_sync_timer)
+assert bpy.app.timers.is_registered(addon.profile_sync.auto_sync_timer)
 assert bpy.types.UMB_PT_layerblend_height_preview.bl_category == "Unreal Bridge"
 assert bpy.types.HTUE_PT_sidebar_ao.bl_parent_id == "HTUE_PT_sidebar"
 assert bpy.types.HTUE_PT_sidebar_export.bl_parent_id == "HTUE_PT_sidebar"
+assert bpy.types.HTUE_PT_sidebar_export_masks.bl_parent_id == "HTUE_PT_sidebar"
 assert bpy.types.HTUE_PT_sidebar_maintenance.bl_parent_id == "HTUE_PT_sidebar"
 assert bpy.types.HTUE_PT_sidebar_maintenance.bl_options == {"DEFAULT_CLOSED"}
 assert bpy.types.HTUE_OT_refresh_contract.bl_label == "Refresh Hair Tool Connections"
+assert bpy.types.HTUE_OT_sync_shared_profile.bl_label == "Sync Shared Hair Profile Now"
 assert (
     bpy.types.HTUE_OT_restore_active_material.bl_label
     == "Remove Bridge and Restore Original Material"
 )
+
+weight_group = export_masks.ensure_mask_group("WEIGHT")
+pdo_group = export_masks.ensure_mask_group("PIXEL_DEPTH_OFFSET")
+assert weight_group[export_masks.GROUP_MARKER] == "ChaosWeight"
+assert pdo_group[export_masks.GROUP_MARKER] == "HairPixelDepthOffset"
+assert weight_group.nodes["Store ChaosWeight"].data_type == "BYTE_COLOR"
+assert pdo_group.nodes["Store HairPixelDepthOffset"].data_type == "BYTE_COLOR"
+
 
 
 def input_socket(tree, name, socket_type, default):

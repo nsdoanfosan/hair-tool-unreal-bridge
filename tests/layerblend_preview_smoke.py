@@ -134,7 +134,23 @@ with tempfile.TemporaryDirectory(prefix="umb_layerblend_preview_") as temporary:
     obj.select_set(True)
     second.select_set(False)
 
-    before_modifier_types = [modifier.type for modifier in obj.modifiers]
+    # Saved files and Group Pro cache copies can lose modifier custom
+    # properties.  Name and generated-group markers must still identify and
+    # consolidate those legacy preview modifiers.
+    legacy_group_a = bpy.data.node_groups.new("LegacyPreviewA", "GeometryNodeTree")
+    legacy_group_a[layerblend_preview.GROUP_MARKER] = True
+    legacy_a = obj.modifiers.new(layerblend_preview.MODIFIER_NAME, "NODES")
+    legacy_a.node_group = legacy_group_a
+    legacy_group_b = bpy.data.node_groups.new("LegacyPreviewB", "GeometryNodeTree")
+    legacy_group_b[layerblend_preview.GROUP_MARKER] = True
+    legacy_b = obj.modifiers.new(layerblend_preview.MODIFIER_NAME, "NODES")
+    legacy_b.node_group = legacy_group_b
+
+    before_modifier_types = [
+        modifier.type
+        for modifier in obj.modifiers
+        if modifier not in {legacy_a, legacy_b}
+    ]
     summary = layerblend_preview.sync_scene_previews(force=True)
     assert grouped.name not in bpy.context.scene.objects
     assert summary["candidates"] == 3
@@ -143,7 +159,9 @@ with tempfile.TemporaryDirectory(prefix="umb_layerblend_preview_") as temporary:
     assert summary["instanced_collections"] == 1
     assert summary["group_pro_hosts"] == 1
     assert summary["group_pro_hosts_skipped"] == 1
-    assert summary["removed"] == 1
+    assert summary["removed"] == 0
+    assert summary["duplicates_removed"] == 1
+    assert summary["legacy_live_modifiers_removed"] == 3
     assert not summary["errors"]
     contract_data = layerblend_contract.loads_contract(
         obj[layerblend_contract.OBJECT_CONTRACT_PROPERTY]
@@ -151,63 +169,83 @@ with tempfile.TemporaryDirectory(prefix="umb_layerblend_preview_") as temporary:
     modifier = layerblend_preview._preview_modifier(obj)
     second_modifier = layerblend_preview._preview_modifier(second)
     grouped_modifier = layerblend_preview._preview_modifier(grouped)
-    assert modifier is not None
-    assert second_modifier is not None
-    assert grouped_modifier is not None
+    assert modifier is None
+    assert second_modifier is None
+    assert grouped_modifier is None
     assert layerblend_preview._preview_modifier(group_host) is None
-    assert modifier.node_group == second_modifier.node_group
-    assert modifier.node_group == grouped_modifier.node_group
-    assert modifier.show_viewport
-    assert not modifier.show_render
-    assert not modifier.show_in_editmode
-    assert not modifier.show_on_cage
-    assert not second_modifier.show_in_editmode
-    assert not second_modifier.show_on_cage
-    assert [m.type for m in obj.modifiers if m != modifier] == before_modifier_types
+    assert not layerblend_preview._preview_modifiers(obj)
+    assert [m.type for m in obj.modifiers] == before_modifier_types
     assert not any(m.type == "SUBSURF" for m in obj.modifiers)
     assert contract_data["preview_only"]
     assert contract_data["export_geometry_unchanged"]
     assert contract_data["material_driven_sync"]
+    assert contract_data["cached_preview"]
+    assert not contract_data["live_geometry_nodes"]
     assert obj.get(layerblend_preview.SOURCE_SIGNATURE_PROPERTY)
     assert contract_data["materials"][0]["scaling_source"] == "unreal_report"
 
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    depsgraph.update()
-    evaluated = obj.evaluated_get(depsgraph)
-    evaluated_mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
-    try:
-        z_values = [vertex.co.z for vertex in evaluated_mesh.vertices]
-        assert z_values
-        # 1.0 texture * 0.5 layer * 1.0 master * 0.5 Color.R * 8 cm = 2 cm.
-        assert max(abs(value - 0.02) for value in z_values) < 1.0e-5, z_values
-    finally:
-        evaluated.to_mesh_clear()
+    build = layerblend_preview.build_cached_preview(obj)
+    assert not build["zero_effect"]
+    cached = layerblend_preview._cached_preview_object(obj)
+    assert cached is not None
+    assert cached.parent == obj
+    assert cached.hide_select
+    assert cached.hide_render
+    assert not cached.hide_get()
+    assert obj.display_type == "WIRE"
+    z_values = [vertex.co.z for vertex in cached.data.vertices]
+    assert z_values
+    # 1.0 texture * 0.5 layer * 1.0 master * 0.5 Color.R * 8 cm = 2 cm.
+    assert max(abs(value - 0.02) for value in z_values) < 1.0e-5, z_values
+    assert not layerblend_preview._preview_modifiers(obj)
 
     states = layerblend_preview.suspend_height_previews()
-    assert len(states) == 3
-    assert not modifier.show_viewport
-    assert not second_modifier.show_viewport
-    assert not grouped_modifier.show_viewport
-    assert not modifier.show_render
+    assert len(states) == 1
+    assert cached.hide_get()
     layerblend_preview.auto_sync_timer()
-    assert not modifier.show_viewport
-    assert not second_modifier.show_viewport
-    assert not grouped_modifier.show_viewport
-    assert set(layerblend_preview.restore_height_previews(states)) == {
-        obj.name,
-        second.name,
-        grouped.name,
-    }
-    assert modifier.show_viewport
-    assert second_modifier.show_viewport
-    assert grouped_modifier.show_viewport
-    assert not modifier.show_render
-    assert not modifier.show_in_editmode
-    assert not modifier.show_on_cage
+    assert cached.hide_get()
+    assert layerblend_preview.restore_height_previews(states) == [obj.name]
+    assert not cached.hide_get()
+
+    obj.umb_layerblend_preview.enabled = False
+    assert cached.hide_get()
+    assert obj.display_type != "WIRE"
+    obj.umb_layerblend_preview.enabled = True
+    assert not cached.hide_get()
+    assert obj.display_type == "WIRE"
+
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.context.view_layer.update()
+    assert cached.hide_get()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.context.view_layer.update()
+    assert not cached.hide_get()
+
+    duplicate_group_a = bpy.data.node_groups.new("DuplicatePreviewA", "GeometryNodeTree")
+    duplicate_group_a[layerblend_preview.GROUP_MARKER] = True
+    duplicate_group_b = bpy.data.node_groups.new("DuplicatePreviewB", "GeometryNodeTree")
+    duplicate_group_b[layerblend_preview.GROUP_MARKER] = True
+    duplicate_group_c = bpy.data.node_groups.new("DuplicatePreviewC", "GeometryNodeTree")
+    duplicate_group_c[layerblend_preview.GROUP_MARKER] = True
+    duplicate = obj.modifiers.new(layerblend_preview.MODIFIER_NAME, "NODES")
+    duplicate.node_group = duplicate_group_c
+    second_duplicate = obj.modifiers.new(layerblend_preview.MODIFIER_NAME, "NODES")
+    second_duplicate.node_group = duplicate_group_b
+    second_duplicate[layerblend_preview.MODIFIER_MARKER] = True
+    assert len(layerblend_preview._preview_modifiers(obj)) == 2
+    keeper, duplicates_removed = layerblend_preview._consolidate_preview_modifiers(obj)
+    assert keeper == second_duplicate
+    assert duplicates_removed == 1
+    assert not keeper.show_in_editmode
+
+    duplicate = obj.modifiers.new(layerblend_preview.MODIFIER_NAME, "NODES")
+    duplicate.node_group = duplicate_group_a
 
     assert layerblend_preview.remove_preview(obj)
     assert layerblend_preview._preview_modifier(obj) is None
-    assert layerblend_preview._preview_modifier(second) is not None
+    assert layerblend_preview._cached_preview_object(obj) is None
+    assert layerblend_preview._preview_modifier(second) is None
     assert layerblend_contract.OBJECT_CONTRACT_PROPERTY not in obj
     assert layerblend_preview.remove_preview(second)
     assert layerblend_preview.remove_preview(grouped)

@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import bpy
+from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, StringProperty
 
 from . import layerblend_contract
@@ -23,22 +24,142 @@ SOURCE_SIGNATURE_PROPERTY = "umb_layerblend_height_source_signature"
 SYNC_ERROR_PROPERTY = "umb_layerblend_height_sync_error"
 DEFAULT_UV_MAP = "UVMap"
 DEFAULT_COLOR_ATTRIBUTE = "Color"
-AUTO_SYNC_INTERVAL_SECONDS = 3.0
+AUTO_SYNC_DEFER_SECONDS = 0.1
+AUTO_SYNC_RETRY_SECONDS = 0.25
 AUTO_SYNC_SCHEMA = 2
 EXPORT_SUSPEND_KEY = "umb_layerblend_height_auto_sync_suspended"
 GPRO_GROUP_NODE_NAMES = {"GPro_Instance", "GPro_RealizeAndProxy"}
 GPRO_COLLECTION_INPUT_IDENTIFIERS = ("Socket_2", "Socket_5")
+CACHE_COLLECTION_NAME = "UMB Height Preview Cache"
+CACHE_COLLECTION_MARKER = "umb_layerblend_height_cache_collection"
+CACHE_OBJECT_MARKER = "umb_layerblend_height_cache"
+CACHE_SOURCE_PROPERTY = "umb_layerblend_height_source"
+CACHE_SOURCE_OBJECT_PROPERTY = "umb_layerblend_height_cache_object"
+CACHE_SIGNATURE_PROPERTY = "umb_layerblend_height_cache_signature"
+SOURCE_DISPLAY_TYPE_PROPERTY = "umb_layerblend_height_source_display_type"
+TEMP_GENERATOR_MARKER = "umb_layerblend_height_temp_generator"
 
 _REPORT_CACHE = {}
 _AUTO_SYNC_RUNNING = False
+_AUTO_SYNC_PENDING = False
 _AUTO_SYNC_LAST_RESULT = {}
 
 
+def _is_preview_modifier(modifier):
+    if modifier.type != "NODES":
+        return False
+    node_group = getattr(modifier, "node_group", None)
+    return bool(
+        modifier.get(MODIFIER_MARKER)
+        or (node_group and node_group.get(GROUP_MARKER))
+        or modifier.name == MODIFIER_NAME
+        or modifier.name.startswith(f"{MODIFIER_NAME}.")
+    )
+
+
+def _preview_modifiers(obj):
+    return [modifier for modifier in obj.modifiers if _is_preview_modifier(modifier)]
+
+
 def _preview_modifier(obj):
-    for modifier in obj.modifiers:
-        if modifier.type == "NODES" and bool(modifier.get(MODIFIER_MARKER)):
-            return modifier
+    modifiers = _preview_modifiers(obj)
+    if not modifiers:
+        return None
+    marked = [modifier for modifier in modifiers if modifier.get(MODIFIER_MARKER)]
+    return (marked or modifiers)[-1]
+
+
+def _is_cached_preview(obj):
+    return bool(obj and obj.get(CACHE_OBJECT_MARKER))
+
+
+def _cached_preview_object(source):
+    cached_name = str(source.get(CACHE_SOURCE_OBJECT_PROPERTY) or "")
+    cached = bpy.data.objects.get(cached_name) if cached_name else None
+    if cached and _is_cached_preview(cached) and cached.parent == source:
+        return cached
+    for child in source.children:
+        if _is_cached_preview(child):
+            source[CACHE_SOURCE_OBJECT_PROPERTY] = child.name
+            return child
     return None
+
+
+def _cache_collection(scene, *, create=False):
+    collection = next(
+        (
+            candidate
+            for candidate in bpy.data.collections
+            if candidate.get(CACHE_COLLECTION_MARKER)
+        ),
+        None,
+    )
+    if collection is None and create:
+        collection = bpy.data.collections.new(CACHE_COLLECTION_NAME)
+        collection[CACHE_COLLECTION_MARKER] = True
+        collection.hide_render = True
+    if collection is not None and collection.name not in scene.collection.children:
+        try:
+            scene.collection.children.link(collection)
+        except RuntimeError:
+            pass
+    return collection
+
+
+def _remember_source_display_type(source):
+    if SOURCE_DISPLAY_TYPE_PROPERTY not in source:
+        source[SOURCE_DISPLAY_TYPE_PROPERTY] = source.display_type
+
+
+def _restore_source_display_type(source):
+    display_type = str(source.get(SOURCE_DISPLAY_TYPE_PROPERTY) or "")
+    if display_type:
+        try:
+            source.display_type = display_type
+        except (TypeError, ValueError):
+            pass
+        del source[SOURCE_DISPLAY_TYPE_PROPERTY]
+
+
+def _apply_cached_preview_visibility(source):
+    cached = _cached_preview_object(source)
+    if cached is None:
+        _restore_source_display_type(source)
+        return False
+    settings = getattr(source, "umb_layerblend_preview", None)
+    enabled = bool(settings and settings.enabled)
+    fresh = str(cached.get(CACHE_SIGNATURE_PROPERTY) or "") == str(
+        source.get(SOURCE_SIGNATURE_PROPERTY) or ""
+    )
+    should_show = enabled and fresh and source.mode != "EDIT"
+    if cached.hide_get() == should_show:
+        cached.hide_set(not should_show)
+    if should_show:
+        _remember_source_display_type(source)
+        if source.display_type != "WIRE":
+            source.display_type = "WIRE"
+    else:
+        _restore_source_display_type(source)
+    return should_show
+
+
+def sync_cached_preview_visibility(scene=None):
+    scene = scene or getattr(bpy.context, "scene", None)
+    if scene is None:
+        return 0
+    updated = 0
+    for obj in scene.objects:
+        if _is_cached_preview(obj) and obj.parent is not None:
+            _apply_cached_preview_visibility(obj.parent)
+            updated += 1
+    return updated
+
+
+@persistent
+def _on_cache_visibility_depsgraph_update(scene, _depsgraph):
+    if not any(_is_cached_preview(obj) for obj in scene.objects):
+        return
+    sync_cached_preview_visibility(scene)
 
 
 def _layerblend_slots(obj):
@@ -492,6 +613,176 @@ def _remove_orphan_group(group, object_name=""):
     return True
 
 
+def _remove_live_preview_modifiers(obj):
+    modifiers = _preview_modifiers(obj)
+    groups = [getattr(modifier, "node_group", None) for modifier in modifiers]
+    for modifier in modifiers:
+        obj.modifiers.remove(modifier)
+    for group in groups:
+        _remove_orphan_group(group, obj.name)
+    return len(modifiers)
+
+
+def remove_cached_preview(source):
+    cached = _cached_preview_object(source)
+    _restore_source_display_type(source)
+    if CACHE_SOURCE_OBJECT_PROPERTY in source:
+        del source[CACHE_SOURCE_OBJECT_PROPERTY]
+    if cached is None:
+        return False
+    mesh = cached.data if cached.type == "MESH" else None
+    collections = list(cached.users_collection)
+    bpy.data.objects.remove(cached, do_unlink=True)
+    if mesh is not None and mesh.users == 0:
+        bpy.data.meshes.remove(mesh)
+    for collection in collections:
+        if collection.get(CACHE_COLLECTION_MARKER) and not collection.objects:
+            bpy.data.collections.remove(collection)
+    return True
+
+
+def _contract_has_effect(data):
+    for entry in data.get("materials") or []:
+        magnitude = float(entry.get("magnitude_cm", 0.0) or 0.0)
+        coefficient = (
+            float(entry.get("height_strength", 0.0) or 0.0)
+            * float(entry.get("master_height", 0.0) or 0.0)
+        )
+        center = float(entry.get("center", 0.0) or 0.0)
+        if abs(magnitude) > 1.0e-12 and (
+            abs(coefficient) > 1.0e-12 or abs(center) > 1.0e-12
+        ):
+            return True
+    return False
+
+
+def _entries_from_contract(data):
+    entries = []
+    for material in data.get("materials") or []:
+        image_name = str(material.get("height_image") or "")
+        image = bpy.data.images.get(image_name)
+        if image is None:
+            raise RuntimeError(f"Height image is unavailable: {image_name or '<unnamed>'}")
+        entry = dict(material)
+        entry["image"] = image
+        entries.append(entry)
+    return entries
+
+
+def build_cached_preview(source, *, scene=None):
+    if source is None or source.type != "MESH":
+        raise RuntimeError("Expected a mesh source object.")
+    if not source.is_editable:
+        raise RuntimeError(f"{source.name} is linked and cannot create a cached preview.")
+    if source.mode != "OBJECT":
+        raise RuntimeError("Return to Object Mode before building the exact Height preview.")
+    scene = scene or bpy.context.scene
+    data = sync_preview(source, scene=scene)
+    if not _contract_has_effect(data):
+        remove_cached_preview(source)
+        return {"object": source.name, "zero_effect": True, "vertices": 0, "polygons": 0}
+
+    entries = _entries_from_contract(data)
+    settings = source.umb_layerblend_preview
+    uv_map = _uv_map_name(source, settings.uv_map)
+    color_attribute = str(settings.color_attribute or DEFAULT_COLOR_ATTRIBUTE)
+    group = _build_node_group(source, entries, uv_map, color_attribute)
+    temporary = None
+    generated_mesh = None
+    try:
+        temporary = source.copy()
+        temporary.name = f"__UMB_HEIGHT_BUILD__{source.name}"
+        temporary[TEMP_GENERATOR_MARKER] = True
+        temporary.hide_viewport = False
+        temporary.hide_render = True
+        temporary.hide_select = True
+        for modifier in list(_preview_modifiers(temporary)):
+            temporary.modifiers.remove(modifier)
+        scene.collection.objects.link(temporary)
+        height_modifier = temporary.modifiers.new("__UMB Exact Height Build", "NODES")
+        height_modifier.node_group = group
+        height_modifier.show_viewport = True
+        height_modifier.show_render = False
+        height_modifier.show_in_editmode = False
+        bpy.context.view_layer.update()
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        evaluated = temporary.evaluated_get(depsgraph)
+        generated_mesh = bpy.data.meshes.new_from_object(
+            evaluated,
+            preserve_all_data_layers=True,
+            depsgraph=depsgraph,
+        )
+        if generated_mesh is None:
+            raise RuntimeError("Blender did not return an evaluated Height preview mesh.")
+    finally:
+        if temporary is not None and temporary.name in bpy.data.objects:
+            bpy.data.objects.remove(temporary, do_unlink=True)
+            bpy.context.view_layer.update()
+        _remove_orphan_group(group, source.name)
+
+    generated_mesh.name = f"{source.data.name}__UMBHeightPreviewCache"
+    cached = _cached_preview_object(source)
+    old_mesh = cached.data if cached and cached.type == "MESH" else None
+    if cached is None:
+        cached = bpy.data.objects.new(f"{source.name}__UMBHeightPreview", generated_mesh)
+        _cache_collection(scene, create=True).objects.link(cached)
+    else:
+        cached.data = generated_mesh
+    if old_mesh is not None and old_mesh.users == 0:
+        bpy.data.meshes.remove(old_mesh)
+
+    world_matrix = source.matrix_world.copy()
+    cached.parent = source
+    cached.matrix_parent_inverse = source.matrix_world.inverted_safe()
+    cached.matrix_world = world_matrix
+    cached[CACHE_OBJECT_MARKER] = True
+    cached[CACHE_SOURCE_PROPERTY] = source.name
+    cached[CACHE_SIGNATURE_PROPERTY] = str(source.get(SOURCE_SIGNATURE_PROPERTY) or "")
+    cached.hide_select = True
+    cached.hide_render = True
+    cached.display_type = "TEXTURED"
+    source[CACHE_SOURCE_OBJECT_PROPERTY] = cached.name
+    _apply_cached_preview_visibility(source)
+    return {
+        "object": source.name,
+        "cache": cached.name,
+        "zero_effect": False,
+        "vertices": len(generated_mesh.vertices),
+        "polygons": len(generated_mesh.polygons),
+    }
+
+
+def _consolidate_preview_modifiers(obj):
+    """Return one preview modifier and remove stale saved or repeated copies.
+
+    Blender does not reliably preserve custom properties on modifiers through
+    every duplication/cache workflow.  Fall back to the generated node-group
+    marker and stable modifier name, preferring the newest explicitly marked
+    modifier when one exists.
+    """
+    modifiers = _preview_modifiers(obj)
+    if not modifiers:
+        return None, 0
+
+    keeper = _preview_modifier(obj)
+    removed_groups = []
+    removed = 0
+    for modifier in modifiers:
+        if modifier == keeper:
+            continue
+        removed_groups.append(getattr(modifier, "node_group", None))
+        obj.modifiers.remove(modifier)
+        removed += 1
+
+    keeper.name = MODIFIER_NAME
+    keeper[MODIFIER_MARKER] = True
+    keeper.show_in_editmode = False
+    keeper.show_on_cage = False
+    for group in removed_groups:
+        _remove_orphan_group(group, obj.name)
+    return keeper, removed
+
+
 def sync_preview(
     obj,
     *,
@@ -583,25 +874,7 @@ def sync_preview(
         )
         raise RuntimeError(f"{obj.name} has no previewable M_LayerBlend slot. {reasons}")
 
-    group = _build_node_group(obj, entries, uv_map, color_attribute)
-    modifier = _preview_modifier(obj)
-    old_group = modifier.node_group if modifier else None
-    if modifier is None:
-        modifier = obj.modifiers.new(name=MODIFIER_NAME, type="NODES")
-    modifier.name = MODIFIER_NAME
-    modifier.node_group = group
-    modifier[MODIFIER_MARKER] = True
-    modifier.show_viewport = bool(settings.enabled)
-    modifier.show_render = False
-    # Keep the authored mesh visible in Edit Mode. Geometry Nodes evaluates a
-    # split/displaced result that cannot carry Blender's original face-selection
-    # overlay reliably, so the Height approximation is intentionally Object
-    # Mode-only.
-    modifier.show_in_editmode = False
-    modifier.show_on_cage = False
-    obj.modifiers.move(obj.modifiers.find(modifier.name), len(obj.modifiers) - 1)
-    if old_group != group:
-        _remove_orphan_group(old_group, obj.name)
+    legacy_modifiers_removed = _remove_live_preview_modifiers(obj)
 
     data = layerblend_contract.build_contract(
         object_name=obj.name,
@@ -611,27 +884,29 @@ def sync_preview(
     )
     data["material_driven_sync"] = True
     data["skipped_materials"] = skipped_materials
+    data["cached_preview"] = True
+    data["live_geometry_nodes"] = False
+    data["legacy_live_modifiers_removed"] = legacy_modifiers_removed
     obj[layerblend_contract.OBJECT_CONTRACT_PROPERTY] = layerblend_contract.dumps_contract(data)
     obj[SOURCE_SIGNATURE_PROPERTY] = _source_signature(obj, slots, report_path, scene)
     if SYNC_ERROR_PROPERTY in obj:
         del obj[SYNC_ERROR_PROPERTY]
     settings.last_report = str(report_path)
+    _apply_cached_preview_visibility(obj)
     return data
 
 
 def remove_preview(obj):
-    modifier = _preview_modifier(obj)
-    group = modifier.node_group if modifier else None
-    if modifier:
-        obj.modifiers.remove(modifier)
-    _remove_orphan_group(group, obj.name)
+    modifiers_removed = _remove_live_preview_modifiers(obj)
+    cache_removed = remove_cached_preview(obj)
+    had_contract = layerblend_contract.OBJECT_CONTRACT_PROPERTY in obj
     if layerblend_contract.OBJECT_CONTRACT_PROPERTY in obj:
         del obj[layerblend_contract.OBJECT_CONTRACT_PROPERTY]
     if SOURCE_SIGNATURE_PROPERTY in obj:
         del obj[SOURCE_SIGNATURE_PROPERTY]
     if SYNC_ERROR_PROPERTY in obj:
         del obj[SYNC_ERROR_PROPERTY]
-    return modifier is not None
+    return bool(modifiers_removed or cache_removed or had_contract)
 
 
 def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
@@ -644,6 +919,8 @@ def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
             "synchronized": 0,
             "unchanged": 0,
             "removed": 0,
+            "duplicates_removed": 0,
+            "legacy_live_modifiers_removed": 0,
             "direct_objects": 0,
             "instanced_objects": 0,
             "instanced_collections": 0,
@@ -660,6 +937,8 @@ def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
         "synchronized": 0,
         "unchanged": 0,
         "removed": 0,
+        "duplicates_removed": 0,
+        "legacy_live_modifiers_removed": 0,
         "linked_skipped": 0,
         "group_pro_hosts_skipped": 0,
         "errors": [],
@@ -669,23 +948,23 @@ def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
     for obj in sync_objects:
         if obj.type != "MESH":
             continue
-        modifier = _preview_modifier(obj)
+        if obj.get(TEMP_GENERATOR_MARKER):
+            continue
+        live_modifiers = _preview_modifiers(obj)
+        summary["duplicates_removed"] += max(0, len(live_modifiers) - 1)
+        summary["legacy_live_modifiers_removed"] += _remove_live_preview_modifiers(obj)
+        cached = _cached_preview_object(obj)
         if _is_gpro_group_host(obj):
             # The referenced Collection members receive the preview. Applying it
             # again to the host after GPro_Instance would double the displacement.
             summary["group_pro_hosts_skipped"] += 1
-            if modifier and obj.is_editable:
+            if cached and obj.is_editable:
                 remove_preview(obj)
                 summary["removed"] += 1
             continue
         slots = _layerblend_slots(obj)
-        if modifier:
-            # Apply the current display policy even when the material signature
-            # is unchanged and the cached node group can be reused.
-            modifier.show_in_editmode = False
-            modifier.show_on_cage = False
         if not slots:
-            if modifier and obj.is_editable:
+            if (cached or layerblend_contract.OBJECT_CONTRACT_PROPERTY in obj) and obj.is_editable:
                 remove_preview(obj)
                 summary["removed"] += 1
             continue
@@ -705,7 +984,11 @@ def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
                     {"object": obj.name, "error": prior_error, "cached": True}
                 )
                 continue
-            if not force and signature == prior_signature and modifier:
+            if (
+                not force
+                and signature == prior_signature
+                and layerblend_contract.OBJECT_CONTRACT_PROPERTY in obj
+            ):
                 summary["unchanged"] += 1
                 continue
             data = sync_preview(
@@ -720,8 +1003,7 @@ def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
             for row in data.get("skipped_materials") or []:
                 summary["warnings"].append({"object": obj.name, **row})
         except Exception as exc:
-            if modifier:
-                remove_preview(obj)
+            _remove_live_preview_modifiers(obj)
             if signature:
                 obj[SOURCE_SIGNATURE_PROPERTY] = signature
             obj[SYNC_ERROR_PROPERTY] = str(exc)
@@ -733,12 +1015,15 @@ def sync_scene_previews(scene=None, *, force=False, measure_color_range=False):
 
 def notify_materials_synchronized(scene=None, *, immediate=True):
     """Public hook for Tiling Material Batch and other material handoffs."""
+    global _AUTO_SYNC_PENDING
     scene = scene or bpy.context.scene
     if scene is not None and not getattr(scene, "umb_layerblend_auto_sync", True):
         return {"scene": scene.name, "disabled": True}
     _REPORT_CACHE.clear()
     if immediate and not _auto_sync_is_suspended():
+        _AUTO_SYNC_PENDING = False
         return sync_scene_previews(scene=scene, force=True)
+    request_auto_sync()
     return {"requested": True}
 
 
@@ -750,13 +1035,30 @@ def _auto_sync_is_suspended():
     return int(bpy.app.driver_namespace.get(EXPORT_SUSPEND_KEY, 0) or 0) > 0
 
 
+def request_auto_sync():
+    """Queue one deferred scene sync, coalescing repeated material notifications."""
+    global _AUTO_SYNC_PENDING
+    _AUTO_SYNC_PENDING = True
+    if not bpy.app.timers.is_registered(auto_sync_timer):
+        bpy.app.timers.register(
+            auto_sync_timer,
+            first_interval=AUTO_SYNC_DEFER_SECONDS,
+            persistent=True,
+        )
+
+
 def auto_sync_timer():
-    global _AUTO_SYNC_RUNNING
-    if _AUTO_SYNC_RUNNING or _auto_sync_is_suspended():
-        return AUTO_SYNC_INTERVAL_SECONDS
+    global _AUTO_SYNC_RUNNING, _AUTO_SYNC_PENDING
+    if _AUTO_SYNC_RUNNING:
+        return AUTO_SYNC_RETRY_SECONDS
+    if not _AUTO_SYNC_PENDING:
+        return None
+    if _auto_sync_is_suspended():
+        return AUTO_SYNC_RETRY_SECONDS
     scene = bpy.context.scene
+    _AUTO_SYNC_PENDING = False
     if scene is None or not getattr(scene, "umb_layerblend_auto_sync", True):
-        return AUTO_SYNC_INTERVAL_SECONDS
+        return None
     _AUTO_SYNC_RUNNING = True
     try:
         sync_scene_previews(scene=scene)
@@ -764,21 +1066,29 @@ def auto_sync_timer():
         print(f"Unreal Material Bridge automatic M_LayerBlend sync skipped: {exc}")
     finally:
         _AUTO_SYNC_RUNNING = False
-    return AUTO_SYNC_INTERVAL_SECONDS
+    return AUTO_SYNC_DEFER_SECONDS if _AUTO_SYNC_PENDING else None
 
 
 def register_auto_sync():
-    if not bpy.app.timers.is_registered(auto_sync_timer):
-        bpy.app.timers.register(
-            auto_sync_timer,
-            first_interval=0.5,
-            persistent=True,
-        )
+    if _on_cache_visibility_depsgraph_update not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_on_cache_visibility_depsgraph_update)
+    for obj in getattr(bpy.data, "objects", ()):
+        if obj.type == "MESH" and obj.is_editable:
+            _remove_live_preview_modifiers(obj)
+    for collection in list(getattr(bpy.data, "collections", ())):
+        if collection.get(CACHE_COLLECTION_MARKER) and not collection.objects:
+            bpy.data.collections.remove(collection)
+    sync_cached_preview_visibility()
+    request_auto_sync()
 
 
 def unregister_auto_sync():
+    global _AUTO_SYNC_PENDING
+    if _on_cache_visibility_depsgraph_update in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_on_cache_visibility_depsgraph_update)
     if bpy.app.timers.is_registered(auto_sync_timer):
         bpy.app.timers.unregister(auto_sync_timer)
+    _AUTO_SYNC_PENDING = False
     _REPORT_CACHE.clear()
 
 
@@ -788,19 +1098,29 @@ def suspend_height_previews():
     ) + 1
     states = []
     for obj in bpy.data.objects:
-        modifier = _preview_modifier(obj)
-        if modifier is None:
-            continue
-        states.append(
-            {
-                "object": obj.name,
-                "modifier": modifier.name,
-                "show_viewport": bool(modifier.show_viewport),
-                "show_render": bool(modifier.show_render),
-            }
-        )
-        modifier.show_viewport = False
-        modifier.show_render = False
+        for modifier in _preview_modifiers(obj):
+            states.append(
+                {
+                    "kind": "MODIFIER",
+                    "object": obj.name,
+                    "modifier": modifier.name,
+                    "show_viewport": bool(modifier.show_viewport),
+                    "show_render": bool(modifier.show_render),
+                }
+            )
+            modifier.show_viewport = False
+            modifier.show_render = False
+        if _is_cached_preview(obj) and obj.parent is not None:
+            states.append(
+                {
+                    "kind": "CACHE",
+                    "object": obj.parent.name,
+                    "cache": obj.name,
+                    "hidden": bool(obj.hide_get()),
+                }
+            )
+            obj.hide_set(True)
+            _restore_source_display_type(obj.parent)
     return states
 
 
@@ -809,8 +1129,15 @@ def restore_height_previews(states):
     try:
         for state in states or []:
             obj = bpy.data.objects.get(str(state.get("object") or ""))
+            if state.get("kind") == "CACHE":
+                cached = bpy.data.objects.get(str(state.get("cache") or ""))
+                if obj is None or cached is None or not _is_cached_preview(cached):
+                    continue
+                _apply_cached_preview_visibility(obj)
+                restored.append(obj.name)
+                continue
             modifier = obj.modifiers.get(str(state.get("modifier") or "")) if obj else None
-            if modifier is None or not modifier.get(MODIFIER_MARKER):
+            if modifier is None or not _is_preview_modifier(modifier):
                 continue
             modifier.show_viewport = bool(state.get("show_viewport", True))
             modifier.show_render = bool(state.get("show_render", False))
@@ -832,12 +1159,8 @@ def restore_height_previews(states):
 def _update_enabled(self, _context):
     obj = self.id_data
     if isinstance(obj, bpy.types.Object):
-        modifier = _preview_modifier(obj)
-        if modifier:
-            modifier.show_viewport = bool(self.enabled)
-            modifier.show_render = False
-            modifier.show_in_editmode = False
-            modifier.show_on_cage = False
+        _remove_live_preview_modifiers(obj)
+        _apply_cached_preview_visibility(obj)
 
 
 def update_scene_auto_sync(scene, _context):
@@ -847,8 +1170,8 @@ def update_scene_auto_sync(scene, _context):
 
 class UMB_LayerBlendPreviewSettings(bpy.types.PropertyGroup):
     enabled: BoolProperty(
-        name="Enable Preview",
-        description="Show the non-exported M_LayerBlend height approximation in the viewport",
+        name="Show Cached Preview",
+        description="Show the manually generated exact Height cache outside Edit Mode",
         default=True,
         update=_update_enabled,
     )
@@ -861,10 +1184,10 @@ class UMB_LayerBlendPreviewSettings(bpy.types.PropertyGroup):
 
 class UMB_OT_SyncLayerBlendPreview(bpy.types.Operator):
     bl_idname = "umb.sync_layerblend_height_preview"
-    bl_label = "Sync Scene M_LayerBlend Materials"
+    bl_label = "Sync Scene M_LayerBlend Height Data"
     bl_description = (
-        "Synchronize every editable mesh in the current Scene that uses a Tiling "
-        "Material Batch M_LayerBlend material"
+        "Synchronize Unreal height values and remove legacy live Geometry Nodes previews; "
+        "cached meshes are rebuilt separately"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -889,6 +1212,76 @@ class UMB_OT_SyncLayerBlendPreview(bpy.types.Operator):
                 f"{summary['unchanged']} unchanged, {len(summary['errors'])} unavailable"
             ),
         )
+        return {"FINISHED"}
+
+
+class UMB_OT_BuildLayerBlendCachedPreview(bpy.types.Operator):
+    bl_idname = "umb.build_layerblend_cached_preview"
+    bl_label = "Build or Refresh Selected Exact Preview"
+    bl_description = (
+        "Evaluate Unreal Height once into a non-exported mesh cache for selected objects; "
+        "the temporary Geometry Nodes generator is removed immediately"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT" and any(
+            obj.type == "MESH" and not _is_cached_preview(obj)
+            for obj in context.selected_objects
+        )
+
+    def execute(self, context):
+        built = []
+        zero_effect = []
+        errors = []
+        for obj in list(context.selected_objects):
+            if obj.type != "MESH" or _is_cached_preview(obj) or not _layerblend_slots(obj):
+                continue
+            try:
+                result = build_cached_preview(obj, scene=context.scene)
+                if result["zero_effect"]:
+                    zero_effect.append(obj.name)
+                else:
+                    built.append(result)
+            except Exception as exc:
+                errors.append(f"{obj.name}: {exc}")
+        if not built and not zero_effect and not errors:
+            self.report({"ERROR"}, "Select at least one editable M_LayerBlend mesh.")
+            return {"CANCELLED"}
+        if errors:
+            self.report({"WARNING"}, f"Built {len(built)} cache(s); {errors[0]}")
+        elif zero_effect:
+            self.report(
+                {"INFO"},
+                f"Built {len(built)} cache(s); {len(zero_effect)} object(s) have zero Height effect",
+            )
+        else:
+            polygons = sum(item["polygons"] for item in built)
+            self.report({"INFO"}, f"Built {len(built)} exact Height cache(s), {polygons:,} polygons")
+        return {"FINISHED"}
+
+
+class UMB_OT_ClearLayerBlendCachedPreview(bpy.types.Operator):
+    bl_idname = "umb.clear_layerblend_cached_preview"
+    bl_label = "Clear Selected Preview Cache"
+    bl_description = "Remove the generated Height cache while retaining synchronized Unreal data"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT" and any(
+            obj.type == "MESH" and _cached_preview_object(obj) is not None
+            for obj in context.selected_objects
+        )
+
+    def execute(self, context):
+        removed = sum(
+            1
+            for obj in list(context.selected_objects)
+            if obj.type == "MESH" and remove_cached_preview(obj)
+        )
+        self.report({"INFO"}, f"Removed {removed} cached Height preview(s)")
         return {"FINISHED"}
 
 
@@ -929,7 +1322,7 @@ class UMB_PT_LayerBlendPreview(bpy.types.Panel):
         obj = context.object
         layout.prop(scene, "umb_layerblend_auto_sync", text="Material-driven Auto Sync")
         row = layout.row(align=True)
-        row.operator("umb.sync_layerblend_height_preview", text="Sync Scene", icon="FILE_REFRESH")
+        row.operator("umb.sync_layerblend_height_preview", text="Sync Data", icon="FILE_REFRESH")
         row.operator("umb.remove_layerblend_height_preview", text="Disable & Remove", icon="X")
 
         summary = last_auto_sync_result()
@@ -963,6 +1356,17 @@ class UMB_PT_LayerBlendPreview(bpy.types.Panel):
         object_box = layout.box()
         object_box.label(text=obj.name, icon="OBJECT_DATA")
         layout = object_box
+        build_row = layout.row(align=True)
+        build_row.operator(
+            "umb.build_layerblend_cached_preview",
+            text="Build / Refresh Selected",
+            icon="MOD_DISPLACE",
+        )
+        build_row.operator(
+            "umb.clear_layerblend_cached_preview",
+            text="Clear",
+            icon="TRASH",
+        )
         layout.prop(settings, "enabled")
         values = layout.box()
         values.use_property_split = True
@@ -997,17 +1401,36 @@ class UMB_PT_LayerBlendPreview(bpy.types.Panel):
                     icon="INFO",
                 )
 
+        cached = _cached_preview_object(obj)
+        if cached is not None:
+            fresh = str(cached.get(CACHE_SIGNATURE_PROPERTY) or "") == str(
+                obj.get(SOURCE_SIGNATURE_PROPERTY) or ""
+            )
+            layout.label(
+                text=(
+                    f"Cache: {len(cached.data.polygons):,} polygons"
+                    if fresh
+                    else "Cache is stale — rebuild after material changes"
+                ),
+                icon="CHECKMARK" if fresh else "ERROR",
+            )
+            layout.label(text="Mesh/UV edits require a manual refresh", icon="INFO")
+        else:
+            layout.label(text="No exact preview cache has been built", icon="MESH_DATA")
+
         sync_error = str(obj.get(SYNC_ERROR_PROPERTY) or "")
         if sync_error:
             layout.label(text=sync_error[:180], icon="ERROR")
 
-        layout.label(text="Object Mode: Height preview · Edit Mode: original mesh")
-        layout.label(text="No subdivision added · automatically disabled during Send to Unreal")
+        layout.label(text="Object Mode: frozen exact cache · Edit Mode: original mesh")
+        layout.label(text="No live Geometry Nodes · cache is excluded from render/export")
 
 
 CLASSES = (
     UMB_LayerBlendPreviewSettings,
     UMB_OT_SyncLayerBlendPreview,
+    UMB_OT_BuildLayerBlendCachedPreview,
+    UMB_OT_ClearLayerBlendCachedPreview,
     UMB_OT_RemoveLayerBlendPreview,
     UMB_PT_LayerBlendPreview,
 )

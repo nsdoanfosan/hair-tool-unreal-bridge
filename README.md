@@ -59,50 +59,89 @@ disabling the AO layer. Hair Tool's safe Map Range behavior is also preserved:
 Starting Send to Unreal automatically removes the display cache and restores
 the original live Hair Tool systems before it evaluates the export.
 
+## Shared Hair profiles
+
+Configured Hair Tool materials use one shared registry named
+`hair_tool_unreal_profiles.json`. By default it lives beside the saved `.blend`
+file, so every character Hair `.blend` in that folder reads and writes the same
+profile IDs. A custom registry path can be assigned per material when files need
+to share profiles across different folders.
+
+Changing a Bridge control schedules an automatic publish after a short debounce.
+Other open Blender files poll the registry and apply a newer revision
+automatically; no manual push or pull is required. Concurrent edits to different
+fields are merged. If two stale files edit the same field, the second publish is
+stopped and the material panel reports a conflict instead of silently
+overwriting the newer value. **Sync Now** is retained for recovery and status
+checks. Saving a `.blend` or starting the existing Unreal handoff flushes pending
+changes first.
+
+The registry is written atomically under a short-lived process lock and stores a
+revision plus a content hash for each profile. The unique-name exporter and Send
+to Unreal keep their existing responsibilities: they consume the refreshed
+Bridge contract but do not own profile synchronization.
+
 ## M_LayerBlend Height preview
 
 The integration is material-driven and selection-independent. On file load and
-while Blender is open, the add-on scans the current Scene for editable meshes
-using Tiling Material Batch `M_LayerBlend_*` materials. Assigning or replacing
-one of those materials, rebuilding a Tiling audit report, or running Tiling
-consumer migration creates or updates the preview automatically for every user
-mesh. **Unreal Bridge > M_LayerBlend Height Preview > Sync Scene** forces the
-same scene-wide synchronization immediately. The add-on samples each material's
-existing `UEUN_Height` image and follows these useful Unreal terms:
+when Tiling Material Batch reports a material handoff, the add-on queues one
+current-Scene scan for editable meshes using `M_LayerBlend_*` materials. Repeated
+notifications are coalesced, and no periodic scene scan runs while Blender is
+idle. This automatic pass synchronizes Unreal values and the export contract; it
+does not leave a live Geometry Nodes modifier on user meshes. After a direct
+manual material-slot edit, **Unreal Bridge > M_LayerBlend Height Preview > Sync
+Data** forces the same scene-wide data synchronization immediately.
+
+Select one or more source meshes in Object Mode and press **Build / Refresh
+Selected** to create an exact, frozen preview cache. The builder samples each
+material's existing `UEUN_Height` image and follows these Unreal terms:
 
 `(Height.R × layer Height_Strengh × master Height × Color.R − Center) × Magnitude`
 
 The current Unreal master reports `Center = 0`, so the approximation moves only
 outward. Centimeters are converted using Blender's scene unit scale. Material
-boundaries are split only in the evaluated preview to prevent neighboring
+boundaries are split only during the one-shot build to prevent neighboring
 material slots from sharing a displaced vertex. The Bridge adds no subdivision;
-it uses the mesh resolution already produced earlier in the modifier stack.
-Identical material/slot configurations share one Geometry Nodes group instead
-of duplicating a graph for every object. Meshes in other Scenes are not evaluated
-until that Scene becomes current.
+it uses the mesh resolution already produced earlier in the modifier stack. A
+temporary Geometry Nodes generator performs the build and is removed immediately;
+the persistent result is an ordinary Mesh in `UMB Height Preview Cache`.
 
-The Height approximation is shown in Object Mode only. In Edit Mode the Bridge
-hides its evaluated split/displaced result so Blender displays the authored mesh
-and face-selection overlay clearly. Returning to Object Mode restores the Height
-preview automatically.
+The frozen cache is shown in Object Mode while the source is displayed as wire.
+In Edit Mode the cache is hidden automatically so Blender draws only the authored
+mesh and face-selection overlay. Returning to Object Mode restores a still-valid
+cache. Mesh or UV edits require **Build / Refresh Selected** again; material-data
+changes mark the old cache stale and hide it until rebuilt.
 
-Group Pro is handled through its referenced Collections, including nested groups
-and mesh groups driven by `GPro_Instance`. The Bridge applies Height to the actual
-member Meshes inside those Collections. It never applies another Height preview
-to the Group Pro host Mesh, even when the host carries copied material slots, so
-the instanced result cannot be displaced twice.
+Contract synchronization still traverses Group Pro referenced Collections,
+including nested groups and mesh groups driven by `GPro_Instance`. Group Pro host
+Meshes never receive a second Height pass. Exact cache generation is intentionally
+selection-driven and only builds the explicitly selected editable source meshes.
 
 If a material slot has no Height image or no matching Unreal Material Instance
 in the latest valid report, only that slot is skipped and the reason is shown in
 the panel. A failed audit JSON never hides the last complete report.
 
-This modifier is display-only. It is excluded from render evaluation and Send
-to Unreal explicitly suspends every Bridge-owned Height preview before it finds
-or evaluates export geometry, then restores the previous viewport state after
-the handoff. The authored base mesh is therefore exported and Unreal applies
-Height exactly once.
+Cache objects are unselectable, excluded from render, and hidden during Send to
+Unreal before export geometry is collected. The authored base mesh is therefore
+exported and Unreal applies Height exactly once.
 
 ## Transport contract
+
+Hair Tool export masks are authored as separate evaluated attributes so they do
+not collide with Hair Tool's `SystemColor`, `Factor`, or `Depth` data. In the 3D
+View sidebar open **Unreal Bridge > Unreal Export Masks**, then add **Weight** or
+**Pixel Depth Offset** to the active Hair Tool subsystem. Each deformer starts with Hair
+Tool's editable Root-to-Tip influence curve and can use the same input-mask
+workflow as other Hair Tool deformers. The existing Hair Tool attribute preview
+also lists `ChaosWeight` and `HairPixelDepthOffset`.
+
+Send to Unreal packs only the disposable evaluated export mesh as
+`RFAOS.R = HairPixelDepthOffset`, `RFAOS.G = ChaosWeight`, `RFAOS.B = AO`, and
+`RFAOS.A = 1`. Missing Weight is safely fixed at zero; missing Pixel Depth
+Offset uses neutral one. Nanite material data remains in UV1-UV3. Vertex G is
+reserved for Chaos Cloth Weight, while Vertex R is consumed by the hair
+material's switchable Pixel Depth Offset mask without changing Blender shading
+attributes.
 
 Every configured Blender material stores a versioned JSON contract in the
 `htue_contract_json` custom property. The existing unique-name exporter asks
@@ -128,7 +167,7 @@ decodable with Skeletal Nanite.
 
 The repository is installed through a Windows junction at Blender's user add-on
 directory. Enable **Unreal Material Bridge**, open Material Properties, and
-click **Set Up hair_sibuki_08 Materials**. Editing a displayed value updates the
+click **Set Up Standard Hair Materials**. Editing a displayed value updates the
 compatible preview group and persisted Unreal contract together. Send to Unreal
 reads evaluated `SystemColor.RGB` directly while preparing the disposable export
 mesh, so no material-level color copy or Alpha classification is required.
@@ -188,6 +227,7 @@ surface/flow, opacity, and Pixel Depth Offset are placed in clearly marked
 ```powershell
 python -m pytest -q
 & "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --factory-startup --python tests\blender_smoke.py
+& "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --factory-startup --python tests\blender_export_masks_smoke.py
 & "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --factory-startup --python tests\layerblend_preview_smoke.py -- --repo "$PWD"
 ```
 
@@ -198,4 +238,6 @@ legacy material controls remain disconnected from the replacement stack.
 shared node groups, the 2 cm reference displacement, no-subdivision policy, and
 export suspension/restoration contract.
 `tests/actual_blend_readonly.py` performs the same four-material audit against
-`hair_sibuki_08.blend` without saving it.
+`hair_sibuki_09.blend` without saving it. `tests/blender_profile_sync_smoke.py`
+proves automatic publish/pull, disjoint stale-edit merging, same-field conflict
+detection, and revision/hash updates across two in-memory child materials.

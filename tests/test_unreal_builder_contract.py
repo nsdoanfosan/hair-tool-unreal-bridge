@@ -7,6 +7,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "addons" / "hair_tool_unreal_bridge" / "schema.py"
 BUILDER_PATH = ROOT / "unreal" / "build_haircards_master.py"
+AUDIT_PATH = ROOT / "unreal" / "audit_haircards_master_v3.py"
 
 
 def load_schema():
@@ -21,6 +22,7 @@ class TestUnrealBuilderContract(unittest.TestCase):
     def setUpClass(cls):
         cls.schema = load_schema()
         cls.source = BUILDER_PATH.read_text(encoding="utf-8")
+        cls.audit_source = AUDIT_PATH.read_text(encoding="utf-8")
         cls.tree = ast.parse(cls.source)
 
     def _literal_parameter_names(self, function_name):
@@ -60,6 +62,31 @@ class TestUnrealBuilderContract(unittest.TestCase):
         self.assertIn("RFAOS_UV_TAG = 6.0", self.source)
         self.assertIn("65535.0", self.source)
         self.assertIn("256.0", self.source)
+
+    def test_nanite_voxel_opacity_uses_ndf_marker_and_blue_coverage(self):
+        self.assertIn(
+            '"MaterialExpressionOneMinus",\n        vertex,\n        -2240,\n        1500,\n        "A",',
+            self.source,
+        )
+        self.assertNotIn('component_mask(material, vertex, "A"', self.source)
+        self.assertIn('component_mask(material, vertex, "B"', self.source)
+        self.assertIn("voxel_marker_scale = constant(material, 255.0", self.source)
+        self.assertIn("tagged_voxel_marker = binary", self.source)
+        self.assertIn("voxel_marker,\n        payload_gate", self.source)
+        self.assertIn("opacity_with_voxel_coverage", self.source)
+        self.assertIn(
+            'connect(opacity_with_voxel_coverage, "", dither, "Alpha Threshold")',
+            self.source,
+        )
+
+    def test_graph_audit_accepts_function_input_type_suffixes(self):
+        self.assertIn('startswith(input_name + " (")', self.audit_source)
+        self.assertIn("direct_vertex_output_channel", self.audit_source)
+
+    def test_opacity_textures_preserve_alpha_coverage_mips(self):
+        self.assertIn("OPACITY_ALPHA_COVERAGE_THRESHOLD = 0.3333", self.source)
+        self.assertIn('"do_scale_mips_for_alpha_coverage", True', self.source)
+        self.assertIn('"alpha_coverage_thresholds", threshold', self.source)
 
     def test_contract_v3_uses_direct_system_color_rgb(self):
         self.assertIn("sync_parameters = set", self.source)

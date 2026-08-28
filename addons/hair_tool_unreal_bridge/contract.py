@@ -16,11 +16,19 @@ def persist_material_contract(material):
 
 def refresh_material_contract(material):
     """Persist bridge-owned controls; deformer data travels on evaluated geometry."""
+    from . import profile_sync
+
+    profile_sync.flush_material(material)
+    if material.htue_settings.profile_sync_status != "CONFLICT":
+        profile_sync.pull_material(material, bootstrap=True)
+        profile_sync.flush_material(material)
     data = persist_material_contract(material)
     return data, {
         "transport": "evaluated SystemColor.RGB via UV1.RG + UV3.G",
         "system_color_alpha_used": False,
         "deferred_to_mesh_export": True,
+        "shared_profile_status": material.htue_settings.profile_sync_status,
+        "shared_profile_revision": int(material.htue_settings.profile_revision),
     }
 
 
