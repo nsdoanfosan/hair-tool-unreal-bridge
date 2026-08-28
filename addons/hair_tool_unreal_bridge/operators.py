@@ -1,7 +1,7 @@
 import bpy
 from bpy.props import EnumProperty
 
-from . import contract, deformer_sync, nodes, schema
+from . import contract, deformer_sync, nodes, profile_sync, schema
 
 
 def _active_material(context):
@@ -354,7 +354,7 @@ class HTUE_OT_SetupActiveMaterial(bpy.types.Operator):
 
 class HTUE_OT_SetupFourMaterials(bpy.types.Operator):
     bl_idname = "htue.setup_four_materials"
-    bl_label = "Set Up hair_sibuki_08 Materials"
+    bl_label = "Set Up Standard Hair Materials"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, _context):
@@ -374,6 +374,31 @@ class HTUE_OT_SetupFourMaterials(bpy.types.Operator):
         if missing:
             self.report({"WARNING"}, "Missing: " + ", ".join(missing))
         self.report({"INFO"}, f"Configured {len(configured)} Hair Tool materials")
+        return {"FINISHED"}
+
+
+class HTUE_OT_SyncSharedProfile(bpy.types.Operator):
+    bl_idname = "htue.sync_shared_profile"
+    bl_label = "Sync Shared Hair Profile Now"
+    bl_description = "Flush local edits and receive the newest shared Hair Tool profile"
+
+    def execute(self, context):
+        material = _active_material(context)
+        if material is None or not material.htue_settings.initialized:
+            self.report({"ERROR"}, "Set up the active Hair material first")
+            return {"CANCELLED"}
+        profile_sync.sync_material_now(material)
+        settings = material.htue_settings
+        if settings.profile_sync_status in {"ERROR", "CONFLICT", "UNAVAILABLE"}:
+            self.report(
+                {"ERROR"},
+                settings.profile_sync_error or settings.profile_sync_status,
+            )
+            return {"CANCELLED"}
+        self.report(
+            {"INFO"},
+            f"Shared profile synchronized at revision {settings.profile_revision}",
+        )
         return {"FINISHED"}
 
 
@@ -481,6 +506,7 @@ CLASSES = (
     HTUE_OT_RemoveSelectedFromExport,
     HTUE_OT_SetupActiveMaterial,
     HTUE_OT_SetupFourMaterials,
+    HTUE_OT_SyncSharedProfile,
     HTUE_OT_RestoreActiveMaterial,
     HTUE_OT_RefreshContract,
     HTUE_OT_BuildCombinedAOPreview,

@@ -163,8 +163,8 @@ def build_contract(material_name, settings):
             },
             "vertex_color": {
                 "name": "RFAOS",
-                "R": "Random / ID vertex source",
-                "G": "Factor / Root-Tip vertex source",
+                "R": "HairPixelDepthOffset export attribute; neutral fallback 1",
+                "G": "ChaosWeight export attribute; neutral fallback 0",
                 "B": "Ambient AO vertex source",
                 "A": "Reserved compatibility channel; SystemColor Alpha is ignored",
             },

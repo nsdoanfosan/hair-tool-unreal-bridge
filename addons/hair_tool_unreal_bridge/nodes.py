@@ -796,6 +796,9 @@ def setup_material(material):
 
     sync_material(material)
     contract.persist_material_contract(material)
+    from . import profile_sync
+
+    profile_sync.ensure_material(material, bootstrap=True)
     return stack
 
 

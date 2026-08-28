@@ -40,15 +40,33 @@ def parse_json_call(value):
 
 
 def input_source(expression, input_name, by_id):
+    item = input_connection(expression, input_name)
+    return by_id.get(item.get("source_id")) if item else None
+
+
+def input_connection(expression, input_name):
+    inputs = expression.get("inputs") or []
     item = next(
         (
             candidate
-            for candidate in expression.get("inputs") or []
+            for candidate in inputs
             if candidate.get("name") == input_name
+            or candidate.get("input_name") == input_name
+            or str(candidate.get("name") or "").startswith(input_name + " (")
         ),
         None,
     )
-    return by_id.get(item.get("source_id")) if item else None
+    return item or (inputs[0] if inputs else None)
+
+
+def direct_vertex_output_channel(expression, input_name, by_id):
+    connection = input_connection(expression, input_name)
+    source = by_id.get(connection.get("source_id")) if connection else None
+    if not source or source.get("class") != "MaterialExpressionVertexColor":
+        return None
+    return {1: "R", 2: "G", 3: "B", 4: "A"}.get(
+        int(connection.get("output_index", -1))
+    )
 
 
 def mask_signature(expression, by_id):
@@ -76,6 +94,22 @@ def saturated_mask_signature(expression, by_id):
         inputs = expression.get("inputs") or []
         source = by_id.get(inputs[0].get("source_id")) if inputs else None
     return mask_signature(source, by_id)
+
+
+def vertex_mask_channel(expression, by_id):
+    if not expression or expression.get("class") != "MaterialExpressionComponentMask":
+        return None
+    source = input_source(expression, "Input", by_id)
+    if source is None:
+        inputs = expression.get("inputs") or []
+        source = by_id.get(inputs[0].get("source_id")) if inputs else None
+    if not source or source.get("class") != "MaterialExpressionVertexColor":
+        return None
+    return "".join(
+        letter
+        for letter, key in (("R", "mask_r"), ("G", "mask_g"), ("B", "mask_b"), ("A", "mask_a"))
+        if expression.get(key)
+    )
 
 
 def constant_value(expression):
@@ -179,6 +213,68 @@ try:
             tag_bounds.append(round(bound, 5))
     tag_bounds.sort()
 
+    dither_nodes = [
+        expression
+        for expression in expressions
+        if expression.get("class") == "MaterialExpressionMaterialFunctionCall"
+        and "DitherTemporalAA" in str(expression.get("function") or "")
+    ]
+    voxel_opacity_graph = False
+    if len(dither_nodes) == 1:
+        dither_source = input_source(dither_nodes[0], "Alpha Threshold", by_id)
+        if dither_source and dither_source.get("class") == "MaterialExpressionMultiply":
+            multiply_inputs = [
+                input_source(dither_source, name, by_id) for name in ("A", "B")
+            ]
+            coverage_lerp = next(
+                (
+                    source
+                    for source in multiply_inputs
+                    if source
+                    and source.get("class") == "MaterialExpressionLinearInterpolate"
+                    and vertex_mask_channel(input_source(source, "B", by_id), by_id) == "B"
+                ),
+                None,
+            )
+            if coverage_lerp:
+                marker = input_source(coverage_lerp, "Alpha", by_id)
+                if marker and marker.get("class") == "MaterialExpressionMultiply":
+                    marker_inputs = [
+                        input_source(marker, name, by_id) for name in ("A", "B")
+                    ]
+                    saturate = next(
+                        (
+                            source
+                            for source in marker_inputs
+                            if source and source.get("class") == "MaterialExpressionSaturate"
+                        ),
+                        None,
+                    )
+                    if saturate:
+                        scaled = input_source(saturate, "Input", by_id)
+                        if scaled is None:
+                            inputs = saturate.get("inputs") or []
+                            scaled = by_id.get(inputs[0].get("source_id")) if inputs else None
+                        if scaled and scaled.get("class") == "MaterialExpressionMultiply":
+                            scaled_inputs = [
+                                input_source(scaled, name, by_id) for name in ("A", "B")
+                            ]
+                            one_minus = next(
+                                (
+                                    source
+                                    for source in scaled_inputs
+                                    if source and source.get("class") == "MaterialExpressionOneMinus"
+                                ),
+                                None,
+                            )
+                            voxel_opacity_graph = bool(
+                                one_minus
+                                and direct_vertex_output_channel(
+                                    one_minus, "Input", by_id
+                                )
+                                == "A"
+                            )
+
     obsolete_scalars = sorted(
         set(scalar_parameters)
         & {"System Mask Contrast", "System Mask Bias", "System Mask Invert"}
@@ -205,6 +301,7 @@ try:
         "payload_masks": payload_masks,
         "rgb_assembly_count": rgb_assembly_count,
         "tag_bounds": tag_bounds,
+        "nanite_voxel_opacity_graph": voxel_opacity_graph,
         "obsolete_scalars": obsolete_scalars,
         "obsolete_vectors": obsolete_vectors,
         "missing_required_scalars": missing_scalars,
@@ -223,6 +320,10 @@ try:
         )
     if tag_bounds != [5.99, 5.99, 7.01, 7.01]:
         report["errors"].append(f"Payload v3 tag bounds are wrong: {tag_bounds}")
+    if not voxel_opacity_graph:
+        report["errors"].append(
+            "Opacity graph does not gate VertexColor.B voxel coverage with the VertexColor.A NDF marker"
+        )
     if obsolete_scalars or obsolete_vectors:
         report["errors"].append(
             f"Obsolete alpha-classification parameters remain: {obsolete_scalars + obsolete_vectors}"

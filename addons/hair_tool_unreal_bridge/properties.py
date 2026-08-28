@@ -20,10 +20,14 @@ def _update_setting(field):
         material = self.id_data
         if not isinstance(material, bpy.types.Material):
             return
-        from . import contract, nodes
+        from . import contract, nodes, profile_sync
+
+        if profile_sync.is_applying_profile(material):
+            return
 
         nodes.sync_material_field(material, field)
         contract.persist_material_contract(material)
+        profile_sync.schedule_publish(material, field)
 
     return update
 
@@ -57,6 +61,17 @@ def blend_property(field, name, default="NORMAL"):
         default=default,
         update=_update_setting(field),
     )
+
+
+def _update_profile_registry(self, _context):
+    if not self.initialized:
+        return
+    material = self.id_data
+    if not isinstance(material, bpy.types.Material):
+        return
+    from . import profile_sync
+
+    profile_sync.ensure_material(material, bootstrap=True)
 
 
 def _update_ao_bake_setting(self, _context):
@@ -148,6 +163,22 @@ class HTUE_AOBakeSettings(bpy.types.PropertyGroup):
 
 class HTUE_MaterialSettings(bpy.types.PropertyGroup):
     initialized: BoolProperty(default=False, options={"HIDDEN"})
+    profile_id: StringProperty(default="", options={"HIDDEN"})
+    profile_revision: IntProperty(default=0, min=0, options={"HIDDEN"})
+    profile_hash: StringProperty(default="", options={"HIDDEN"})
+    profile_base_json: StringProperty(default="", options={"HIDDEN"})
+    profile_sync_status: StringProperty(default="UNAVAILABLE", options={"HIDDEN"})
+    profile_sync_error: StringProperty(default="", options={"HIDDEN"})
+    profile_registry_path: StringProperty(
+        name="Shared Profile Registry",
+        description=(
+            "Optional shared registry path; when empty, use "
+            "hair_tool_unreal_profiles.json beside the current .blend"
+        ),
+        subtype="FILE_PATH",
+        default="",
+        update=_update_profile_registry,
+    )
     texture_root: StringProperty(
         name="Texture Root",
         subtype="DIR_PATH",

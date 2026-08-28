@@ -40,6 +40,7 @@ RFAOS_UV_BA_INDEX = 3
 RFAOS_UV_TAG = 6.0
 RFAOS_UV_TAG_LOWER = 5.99
 RFAOS_UV_TAG_UPPER = 7.01
+OPACITY_ALPHA_COVERAGE_THRESHOLD = 0.3333
 
 # Material Instance groups mirror the Blender panel order. Synced controls are
 # deliberately separated from values that remain Unreal-only.
@@ -353,6 +354,14 @@ def ensure_texture_settings(asset_name, virtual):
         else:
             texture.set_editor_property("virtual_texture_streaming", bool(virtual))
         changed = True
+    if asset_name.lower().endswith("_opacity"):
+        if not bool(texture.get_editor_property("do_scale_mips_for_alpha_coverage")):
+            texture.set_editor_property("do_scale_mips_for_alpha_coverage", True)
+            changed = True
+        threshold = unreal.Vector4(OPACITY_ALPHA_COVERAGE_THRESHOLD, 0.0, 0.0, 0.0)
+        if texture.get_editor_property("alpha_coverage_thresholds") != threshold:
+            texture.set_editor_property("alpha_coverage_thresholds", threshold)
+            changed = True
     if changed:
         EAL.save_asset(path, only_if_is_dirty=False)
     result["texture_settings"].append({"path": path, "virtual": bool(virtual), "changed": changed})
@@ -798,7 +807,17 @@ def build_master(material):
     connect_property(hair_bsdf, "", "MP_FRONT_MATERIAL")
     connect_property(ao_result, "", "MP_AMBIENT_OCCLUSION")
 
-    comment(material, "06 | OPACITY\nRL_Hair-compatible strength, multiplier, power, threshold branch and temporal dither.", -4300, 1220, 3450, 1650)
+    comment(
+        material,
+        "06 | OPACITY\n"
+        "RL_Hair-compatible alpha shaping and temporal dither. Tagged Nanite voxels "
+        "use VertexColor.A (Voxel NDF marker) to apply VertexColor.B coverage without "
+        "changing source-triangle AO.",
+        -4300,
+        1220,
+        3450,
+        1650,
+    )
     alpha_multiplier = scalar(material, "Alpha Multiplier", 1.5, GROUP_UNREAL_OPACITY, 3, -4020, 2320, "RL_Hair alpha pre-multiplier")
     alpha_power = scalar(material, "Alpha Power", 0.7, GROUP_UNREAL_OPACITY, 4, -3820, 2320, "RL_Hair alpha exponent")
     opacity_multiplier = scalar(material, "Opacity Multiplier", 1.0, GROUP_UNREAL_OPACITY, 1, -3620, 2320, "RL_Hair opacity multiplier")
@@ -821,12 +840,73 @@ def build_master(material):
     connect(high_branch, "", opacity_if, "A == B")
     connect(low_branch, "", opacity_if, "A < B")
 
+    # Source HTUE vertices keep RFAOS.A exactly 1 and RFAOS.B as the legacy AO
+    # fallback. Nanite Voxelize + Voxel NDF overwrites A on generated voxels,
+    # while Voxel Opacity writes fractional coverage to B. Detect that voxel
+    # representation and consume B only for tagged v3 payloads; source cards
+    # therefore retain their existing opacity and AO behavior.
+    voxel_coverage = component_mask(material, vertex, "B", -2440, 1590)
+    voxel_marker_inverse = unary(
+        material,
+        "MaterialExpressionOneMinus",
+        vertex,
+        -2240,
+        1500,
+        "A",
+    )
+    voxel_marker_scale = constant(material, 255.0, -2240, 1620)
+    voxel_marker_scaled = binary(
+        material,
+        "MaterialExpressionMultiply",
+        voxel_marker_inverse,
+        voxel_marker_scale,
+        -2040,
+        1500,
+    )
+    voxel_marker = unary(
+        material,
+        "MaterialExpressionSaturate",
+        voxel_marker_scaled,
+        -1840,
+        1500,
+    )
+    tagged_voxel_marker = binary(
+        material,
+        "MaterialExpressionMultiply",
+        voxel_marker,
+        payload_gate,
+        -1640,
+        1500,
+    )
+    voxel_opacity = lerp(
+        material,
+        one,
+        voxel_coverage,
+        tagged_voxel_marker,
+        -1440,
+        1590,
+    )
+    set_prop(voxel_opacity, "desc", "HTUE Nanite Voxel Opacity: tagged voxel coverage")
+    opacity_with_voxel_coverage = binary(
+        material,
+        "MaterialExpressionMultiply",
+        opacity_if,
+        voxel_opacity,
+        -2240,
+        1920,
+    )
+    set_prop(
+        opacity_with_voxel_coverage,
+        "desc",
+        "HTUE Nanite Voxel Opacity: shaped opacity * voxel coverage",
+    )
+
     dither_function = EAL.load_asset(DITHER_FUNCTION)
     if dither_function is None:
         raise RuntimeError(f"DitherTemporalAA material function missing: {DITHER_FUNCTION}")
-    dither = make(material, "MaterialExpressionMaterialFunctionCall", -2140, 1920)
+    dither = make(material, "MaterialExpressionMaterialFunctionCall", -1940, 1920)
     set_prop(dither, "material_function", dither_function)
-    connect(opacity_if, "", dither, "Alpha Threshold")
+    connect(opacity_with_voxel_coverage, "", dither, "Alpha Threshold")
     connect_property(dither, "Result", "MP_OPACITY_MASK")
 
     pdo_strength = scalar(material, "Pixel Depth Offset", 0.0, GROUP_UNREAL_OPACITY, 6, -1900, 2460, "Uses inverse IRD.B depth")
