@@ -60,6 +60,13 @@ def registry_path(material):
     configured = str(settings.profile_registry_path or "").strip()
     if configured:
         return Path(bpy.path.abspath(configured)).resolve()
+    texture_root = str(settings.texture_root or "").strip()
+    if texture_root:
+        texture_registry = (
+            Path(bpy.path.abspath(texture_root)).resolve().parent / PROFILE_FILENAME
+        )
+        if texture_registry.is_file():
+            return texture_registry
     blend_path = str(bpy.data.filepath or "").strip()
     if not blend_path:
         return None

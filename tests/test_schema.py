@@ -32,6 +32,17 @@ def settings():
 
 
 class TestHairToolUnrealBridgeSchema(unittest.TestCase):
+    def test_legacy_blender_material_name_uses_the_shared_short_profile(self):
+        self.assertEqual(
+            schema.target_texture_set("HT_Default_Material_short_01"),
+            "Hair_Short_01",
+        )
+        data = schema.build_contract("HT_Default_Material_short_01", settings())
+        self.assertEqual(
+            data["material_instance_path"],
+            "/Game/Material/HairTool/MI/MI_HT_Default_Material_short_01",
+        )
+
     def test_contract_uses_exact_hairtool_mi_path_and_pipeline_ownership(self):
         data = schema.build_contract("M_HT_Default_Material_01", settings())
         self.assertEqual(

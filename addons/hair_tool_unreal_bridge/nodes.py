@@ -40,6 +40,20 @@ def find_hair_shader(material):
     return None
 
 
+def find_legacy_hair_shader(material):
+    """Find older Hair Tool groups that expose one top-level Albedo input."""
+    if not material.use_nodes or material.node_tree is None:
+        return None
+    for node in material.node_tree.nodes:
+        if node.bl_idname != "ShaderNodeGroup" or node.node_tree is None:
+            continue
+        inputs = {socket.name for socket in node.inputs}
+        outputs = {socket.name for socket in node.outputs}
+        if "Albedo" in inputs and "Shader" in outputs:
+            return node
+    return None
+
+
 def _new_socket(
     tree,
     name,
@@ -395,7 +409,7 @@ def _legacy_socket_value(shader, name, fallback):
 
 def initialise_settings(material, shader):
     settings = material.htue_settings
-    settings.texture_set = schema.TARGET_TEXTURE_SETS.get(material.name, settings.texture_set)
+    settings.texture_set = schema.target_texture_set(material.name) or settings.texture_set
     settings.base_color = _legacy_socket_value(shader, "Base Color", settings.base_color)
     settings.root_color = _legacy_socket_value(shader, "Root Color", settings.root_color)
     settings.root_mix = _legacy_socket_value(shader, "Root Color Mix Factor", settings.root_mix)
@@ -432,6 +446,7 @@ def _save_legacy_state(material, shader):
     raw_state = material.get(schema.LEGACY_STATE_PROPERTY)
     state = json.loads(str(raw_state)) if raw_state else None
     socket_names = (
+        "Albedo",
         "Base Color",
         "Root Color Mix Factor",
         "Tip Color Mix Factor",
@@ -672,6 +687,32 @@ def _install_stack_in_clone(clone, stack_group):
     return stack
 
 
+def _install_legacy_top_level_stack(material, shader, stack_group):
+    """Drive an old HairShaderMain Albedo socket without editing its node group."""
+    tree = material.node_tree
+    stack = tree.nodes.new("ShaderNodeGroup")
+    stack.name = schema.BRIDGE_NODE_NAME
+    stack.label = "HTUE synchronized color stack (legacy Albedo replacement)"
+    stack.node_tree = stack_group
+
+    source_specs = (
+        ("Random", "Color", "Random", "HTUE Random"),
+        ("Factor", "Factor", "Factor", "HTUE Factor"),
+        ("SystemColor", "Color", "System Attribute Color", "HTUE SystemColor"),
+        ("AO", "Color", "AO Vertex", "HTUE AO"),
+        ("Depth", "Factor", "Depth Vertex", "HTUE Depth"),
+    )
+    for attribute_name, output_name, input_name, fallback_name in source_specs:
+        source = _find_attribute_node(tree, attribute_name)
+        if source is None:
+            source = _top_node(tree, "ShaderNodeAttribute", fallback_name)
+            source.attribute_name = attribute_name
+        _link_unique(tree, source.outputs[output_name], stack.inputs[input_name])
+    _link_unique(tree, stack.outputs["Color"], shader.inputs["Albedo"])
+    stack["htue_replaces_legacy_albedo"] = True
+    return stack
+
+
 def _find_attribute_node(tree, attribute_name):
     return next(
         (
@@ -734,6 +775,10 @@ def _remove_obsolete_top_level_nodes(tree):
 
 def setup_material(material):
     shader = find_hair_shader(material)
+    legacy_top_level = False
+    if shader is None:
+        shader = find_legacy_hair_shader(material)
+        legacy_top_level = shader is not None
     if shader is None:
         raise RuntimeError(f"{material.name}: HairShaderMain-compatible node was not found")
     settings = material.htue_settings
@@ -751,19 +796,6 @@ def setup_material(material):
     tree = material.node_tree
     input_state = _capture_shader_inputs(material, tree, shader)
 
-    original_name = str(material.get(schema.ORIGINAL_SHADER_GROUP_PROPERTY) or "")
-    original_group = bpy.data.node_groups.get(original_name) if original_name else None
-    if original_group is None or original_group.name.startswith(schema.SHADER_CLONE_PREFIX):
-        if not shader.node_tree.name.startswith(schema.SHADER_CLONE_PREFIX):
-            original_group = shader.node_tree
-            material[schema.ORIGINAL_SHADER_GROUP_PROPERTY] = original_group.name
-        else:
-            raise RuntimeError(f"{material.name}: original HairShaderMain group is unavailable")
-
-    old_clone = shader.node_tree if shader.node_tree.name.startswith(schema.SHADER_CLONE_PREFIX) else None
-    shader.node_tree = original_group
-    if old_clone is not None and old_clone.users == 0:
-        bpy.data.node_groups.remove(old_clone)
     _remove_obsolete_top_level_nodes(tree)
 
     stack_name = f"{schema.BRIDGE_GROUP_PREFIX}::{material.name}"
@@ -773,15 +805,38 @@ def setup_material(material):
     stack_group = bpy.data.node_groups.new(stack_name, "ShaderNodeTree")
     _build_group(stack_group, settings)
 
-    clone = original_group.copy()
-    clone.name = f"{schema.SHADER_CLONE_PREFIX}::{material.name}"
-    stack = _install_stack_in_clone(clone, stack_group)
+    if legacy_top_level:
+        stack = _install_legacy_top_level_stack(material, shader, stack_group)
+    else:
+        original_name = str(material.get(schema.ORIGINAL_SHADER_GROUP_PROPERTY) or "")
+        original_group = bpy.data.node_groups.get(original_name) if original_name else None
+        if original_group is None or original_group.name.startswith(schema.SHADER_CLONE_PREFIX):
+            if not shader.node_tree.name.startswith(schema.SHADER_CLONE_PREFIX):
+                original_group = shader.node_tree
+                material[schema.ORIGINAL_SHADER_GROUP_PROPERTY] = original_group.name
+            else:
+                raise RuntimeError(
+                    f"{material.name}: original HairShaderMain group is unavailable"
+                )
+
+        old_clone = (
+            shader.node_tree
+            if shader.node_tree.name.startswith(schema.SHADER_CLONE_PREFIX)
+            else None
+        )
+        shader.node_tree = original_group
+        if old_clone is not None and old_clone.users == 0:
+            bpy.data.node_groups.remove(old_clone)
+        clone = original_group.copy()
+        clone.name = f"{schema.SHADER_CLONE_PREFIX}::{material.name}"
+        stack = _install_stack_in_clone(clone, stack_group)
+        shader.node_tree = clone
+        _restore_shader_inputs(tree, shader, input_state)
+
     stack.inputs["AO Vertex Available"].default_value = float(ao_vertex_available)
     stack.inputs["System Attribute Available"].default_value = float(
         system_attribute_available
     )
-    shader.node_tree = clone
-    _restore_shader_inputs(tree, shader, input_state)
 
     uv = _top_node(tree, "ShaderNodeTexCoord", "HTUE UV")
     ird = _top_node(tree, "ShaderNodeTexImage", "HTUE IRD Map")
@@ -790,9 +845,13 @@ def setup_material(material):
     orm.image = _image(settings.texture_root, settings.texture_set, "ORM Map")
     _link_unique(tree, uv.outputs["UV"], ird.inputs["Vector"])
     _link_unique(tree, uv.outputs["UV"], orm.inputs["Vector"])
-    _ensure_hair_attribute_links(material, shader)
-    _link_unique(tree, ird.outputs["Color"], shader.inputs["HTUE IRD Map"])
-    _link_unique(tree, orm.outputs["Color"], shader.inputs["HTUE ORM Map"])
+    if legacy_top_level:
+        _link_unique(tree, ird.outputs["Color"], stack.inputs["IRD Map"])
+        _link_unique(tree, orm.outputs["Color"], stack.inputs["ORM Map"])
+    else:
+        _ensure_hair_attribute_links(material, shader)
+        _link_unique(tree, ird.outputs["Color"], shader.inputs["HTUE IRD Map"])
+        _link_unique(tree, orm.outputs["Color"], shader.inputs["HTUE ORM Map"])
 
     sync_material(material)
     contract.persist_material_contract(material)
@@ -806,9 +865,11 @@ def sync_material(material):
     """Synchronize every Bridge-owned socket during setup or migration."""
     settings = material.htue_settings
     shader = find_hair_shader(material)
-    if shader is None or shader.node_tree is None:
-        return
-    stack = shader.node_tree.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+    stack = None
+    if shader is not None and shader.node_tree is not None:
+        stack = shader.node_tree.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+    if stack is None and material.node_tree is not None:
+        stack = material.node_tree.nodes.get(schema.BRIDGE_NODE_NAME)
     if stack is None or stack.node_tree is None:
         return
     for field in (*schema.VECTOR_FIELDS, *schema.SCALAR_FIELDS):
@@ -818,9 +879,11 @@ def sync_material(material):
 def refresh_deformer_availability(material):
     """Refresh source-presence switches without rebuilding shader groups."""
     shader = find_hair_shader(material)
-    if shader is None or shader.node_tree is None:
-        return False
-    stack = shader.node_tree.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+    stack = None
+    if shader is not None and shader.node_tree is not None:
+        stack = shader.node_tree.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+    if stack is None and material.node_tree is not None:
+        stack = material.node_tree.nodes.get(schema.BRIDGE_NODE_NAME)
     if stack is None:
         return False
 
@@ -866,9 +929,11 @@ def sync_material_field(material, field):
     """Update only the socket owned by one edited UI property."""
     settings = material.htue_settings
     shader = find_hair_shader(material)
-    if shader is None or shader.node_tree is None:
-        return False
-    stack = shader.node_tree.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+    stack = None
+    if shader is not None and shader.node_tree is not None:
+        stack = shader.node_tree.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+    if stack is None and material.node_tree is not None:
+        stack = material.node_tree.nodes.get(schema.BRIDGE_NODE_NAME)
     if stack is None or stack.node_tree is None:
         return False
     return _sync_material_field_to_stack(settings, stack, field)
@@ -883,6 +948,9 @@ def restore_material(material):
     stack_group = None
     if clone is not None:
         stack = clone.nodes.get(schema.INTERNAL_STACK_NODE_NAME)
+        stack_group = stack.node_tree if stack and stack.node_tree else None
+    if stack_group is None:
+        stack = tree.nodes.get(schema.BRIDGE_NODE_NAME)
         stack_group = stack.node_tree if stack and stack.node_tree else None
     original_name = str(material.get(schema.ORIGINAL_SHADER_GROUP_PROPERTY) or "")
     original_group = bpy.data.node_groups.get(original_name)

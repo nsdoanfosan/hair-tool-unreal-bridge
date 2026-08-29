@@ -45,12 +45,31 @@ _AUTO_SYNC_PENDING = False
 _AUTO_SYNC_LAST_RESULT = {}
 
 
+def _modifier_marker_value(modifier):
+    """Read the legacy modifier marker when this Blender type supports it."""
+    try:
+        return bool(modifier.get(MODIFIER_MARKER))
+    except (AttributeError, TypeError):
+        # Blender 5.2 no longer exposes IDProperties on modifier RNA types.
+        # Stable names and the node-group marker remain the source of truth.
+        return False
+
+
+def _set_modifier_marker(modifier):
+    """Write the legacy marker on Blender versions that still support it."""
+    try:
+        modifier[MODIFIER_MARKER] = True
+    except (AttributeError, TypeError):
+        return False
+    return True
+
+
 def _is_preview_modifier(modifier):
     if modifier.type != "NODES":
         return False
     node_group = getattr(modifier, "node_group", None)
     return bool(
-        modifier.get(MODIFIER_MARKER)
+        _modifier_marker_value(modifier)
         or (node_group and node_group.get(GROUP_MARKER))
         or modifier.name == MODIFIER_NAME
         or modifier.name.startswith(f"{MODIFIER_NAME}.")
@@ -65,7 +84,7 @@ def _preview_modifier(obj):
     modifiers = _preview_modifiers(obj)
     if not modifiers:
         return None
-    marked = [modifier for modifier in modifiers if modifier.get(MODIFIER_MARKER)]
+    marked = [modifier for modifier in modifiers if _modifier_marker_value(modifier)]
     return (marked or modifiers)[-1]
 
 
@@ -586,8 +605,11 @@ def _build_node_group(obj, material_entries, uv_map, color_attribute):
         selection.data_type = "INT"
         selection.operation = "EQUAL"
         selection.location = (x + 1140, y)
-        selection.inputs[3].default_value = entry["slot_index"]
-        links.new(material_index.outputs["Material Index"], selection.inputs[2])
+        # Blender 5.2 exposes only the active INT sockets instead of keeping
+        # the hidden FLOAT/VECTOR variants in the collection. Names are stable
+        # across both layouts while the former indices (2/3) are not.
+        selection.inputs["B"].default_value = entry["slot_index"]
+        links.new(material_index.outputs["Material Index"], selection.inputs["A"])
 
         set_position = nodes.new("GeometryNodeSetPosition")
         set_position.parent = frame
@@ -775,7 +797,7 @@ def _consolidate_preview_modifiers(obj):
         removed += 1
 
     keeper.name = MODIFIER_NAME
-    keeper[MODIFIER_MARKER] = True
+    _set_modifier_marker(keeper)
     keeper.show_in_editmode = False
     keeper.show_on_cage = False
     for group in removed_groups:
@@ -1205,6 +1227,12 @@ class UMB_OT_SyncLayerBlendPreview(bpy.types.Operator):
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        if not summary["candidates"]:
+            self.report(
+                {"INFO"},
+                "No M_LayerBlend material was found in the current Scene.",
+            )
+            return {"FINISHED"}
         self.report(
             {"WARNING"} if summary["errors"] else {"INFO"},
             (
@@ -1247,7 +1275,10 @@ class UMB_OT_BuildLayerBlendCachedPreview(bpy.types.Operator):
             except Exception as exc:
                 errors.append(f"{obj.name}: {exc}")
         if not built and not zero_effect and not errors:
-            self.report({"ERROR"}, "Select at least one editable M_LayerBlend mesh.")
+            self.report(
+                {"INFO"},
+                "No selected mesh uses an editable M_LayerBlend material.",
+            )
             return {"CANCELLED"}
         if errors:
             self.report({"WARNING"}, f"Built {len(built)} cache(s); {errors[0]}")
@@ -1301,7 +1332,11 @@ class UMB_OT_RemoveLayerBlendPreview(bpy.types.Operator):
         for obj in sync_objects:
             if obj.type == "MESH" and obj.is_editable and remove_preview(obj):
                 removed += 1
-        self.report({"INFO"}, f"Removed {removed} Scene height preview(s)")
+        if removed:
+            message = f"Removed {removed} Scene height preview(s)"
+        else:
+            message = "No M_LayerBlend preview data was found in the current Scene."
+        self.report({"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -1327,13 +1362,19 @@ class UMB_PT_LayerBlendPreview(bpy.types.Panel):
 
         summary = last_auto_sync_result()
         if summary and summary.get("scene") == scene.name:
-            layout.label(
-                text=(
-                    f"Scene: {summary.get('candidates', 0)} users · "
-                    f"{len(summary.get('errors') or [])} unavailable"
-                ),
-                icon="CHECKMARK" if not summary.get("errors") else "INFO",
-            )
+            if not summary.get("candidates"):
+                layout.label(
+                    text="No M_LayerBlend materials in this Scene",
+                    icon="INFO",
+                )
+            else:
+                layout.label(
+                    text=(
+                        f"Scene: {summary.get('candidates', 0)} users · "
+                        f"{len(summary.get('errors') or [])} unavailable"
+                    ),
+                    icon="CHECKMARK" if not summary.get("errors") else "INFO",
+                )
             if summary.get("instanced_objects"):
                 layout.label(
                     text=(

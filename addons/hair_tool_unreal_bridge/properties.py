@@ -172,8 +172,8 @@ class HTUE_MaterialSettings(bpy.types.PropertyGroup):
     profile_registry_path: StringProperty(
         name="Shared Profile Registry",
         description=(
-            "Optional shared registry path; when empty, use "
-            "hair_tool_unreal_profiles.json beside the current .blend"
+            "Optional shared registry path; when empty, reuse an existing registry "
+            "beside the texture folder, then fall back to the current .blend folder"
         ),
         subtype="FILE_PATH",
         default="",

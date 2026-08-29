@@ -23,6 +23,141 @@ AO_MODIFIER_FIELDS = {
     "second_bounce_factor": ("Input_15", 0.4),
     "use_custom_normals": ("Socket_0", False),
 }
+BRIDGE_AO_MODIFIER_NAME = "HTUE HT_Mesh_AO"
+GEOMETRY_INPUT_SOCKET_NAMES = {
+    "Input_3": "Samples",
+    "Input_13": "Base Color Value",
+    "Input_4": "Spread Ange",
+    "Input_8": "Blur Steps",
+    "Input_14": "First Bounce Factor",
+    "Input_15": "Second Bounce Factor",
+    "Socket_0": "Use Custom Normals",
+    "Input_7": "AO Attribute Name",
+    "Input_16": "Use AO",
+}
+
+
+def _modifier_input_group(modifier, identifier):
+    """Return one Geometry Nodes interface input on Blender 5.2+."""
+    try:
+        return modifier.properties.inputs[identifier]
+    except (AttributeError, KeyError, TypeError):
+        inputs = getattr(getattr(modifier, "properties", None), "inputs", None)
+        socket_name = GEOMETRY_INPUT_SOCKET_NAMES.get(identifier)
+        interface = getattr(getattr(modifier, "node_group", None), "interface", None)
+        if inputs is None or socket_name is None or interface is None:
+            return None
+        for item in interface.items_tree:
+            if (
+                getattr(item, "item_type", None) == "SOCKET"
+                and getattr(item, "in_out", None) == "INPUT"
+                and item.name == socket_name
+            ):
+                try:
+                    return inputs[item.identifier]
+                except (KeyError, TypeError):
+                    return None
+        return None
+
+
+def _modifier_input_get(modifier, identifier, fallback=None):
+    """Read a Geometry Nodes input across Blender API generations."""
+    input_group = _modifier_input_group(modifier, identifier)
+    if input_group is not None:
+        try:
+            return input_group["value"]
+        except (KeyError, TypeError):
+            return fallback
+    try:
+        return modifier.get(identifier, fallback)
+    except (AttributeError, TypeError):
+        return fallback
+
+
+def _modifier_input_set(modifier, identifier, value):
+    """Write a Geometry Nodes input across Blender API generations."""
+    input_group = _modifier_input_group(modifier, identifier)
+    if input_group is not None:
+        input_group["value"] = value
+        return
+    if getattr(getattr(modifier, "properties", None), "inputs", None) is not None:
+        raise KeyError(
+            f'Geometry Nodes input "{identifier}" is unavailable on {modifier.name}'
+        )
+    modifier[identifier] = value
+
+
+def _modifier_input_state(modifier, identifier):
+    """Capture one Geometry Nodes value for atomic operator rollback."""
+    input_group = _modifier_input_group(modifier, identifier)
+    if input_group is not None:
+        return ("interface", "value" in input_group, input_group.get("value"))
+    try:
+        return ("legacy", identifier in modifier, modifier.get(identifier))
+    except (AttributeError, TypeError):
+        return ("missing", False, None)
+
+
+def _restore_modifier_input(modifier, identifier, state):
+    """Restore a value captured by :func:`_modifier_input_state`."""
+    storage, existed, value = state
+    if storage == "interface":
+        input_group = _modifier_input_group(modifier, identifier)
+        if input_group is None:
+            return
+        if existed:
+            input_group["value"] = value
+        elif "value" in input_group:
+            del input_group["value"]
+        return
+    if storage == "legacy":
+        if existed:
+            modifier[identifier] = value
+        else:
+            try:
+                if identifier in modifier:
+                    del modifier[identifier]
+            except (AttributeError, TypeError):
+                pass
+
+
+def _modifier_input_values(modifier):
+    """Yield exposed Geometry Nodes values without assuming modifier IDProperties."""
+    inputs = getattr(getattr(modifier, "properties", None), "inputs", None)
+    if inputs is not None:
+        for identifier in dir(inputs):
+            if identifier.startswith("_"):
+                continue
+            try:
+                input_group = inputs[identifier]
+                if "value" in input_group:
+                    yield input_group["value"]
+            except (KeyError, TypeError):
+                continue
+        return
+    try:
+        for identifier in modifier.keys():
+            yield modifier.get(identifier)
+    except (AttributeError, TypeError):
+        return
+
+
+def _legacy_bridge_ao_marker(modifier):
+    try:
+        return bool(modifier.get(BRIDGE_AO_MODIFIER_PROPERTY))
+    except (AttributeError, TypeError):
+        return False
+
+
+def _is_bridge_ao_modifier(modifier):
+    return bool(
+        modifier.type == "NODES"
+        and (
+            modifier.name == BRIDGE_AO_MODIFIER_NAME
+            or modifier.name.startswith(f"{BRIDGE_AO_MODIFIER_NAME}.")
+            or _legacy_bridge_ao_marker(modifier)
+        )
+    )
 
 
 def is_hair_tool_output(obj):
@@ -135,7 +270,7 @@ def hair_system_hierarchy_root(obj):
             modifier.type == "NODES"
             and modifier.node_group is not None
             and modifier.node_group.name.startswith("Hair_System_Setup")
-            and any(modifier.get(key) == parent for key in modifier.keys())
+            and any(value == parent for value in _modifier_input_values(modifier))
             for modifier in current.modifiers
         )
         if not setup_references_parent:
@@ -191,7 +326,7 @@ def ao_modifiers(obj):
         for modifier in obj.modifiers
         if modifier.type == "NODES"
         and (
-            bool(modifier.get(BRIDGE_AO_MODIFIER_PROPERTY))
+            _is_bridge_ao_modifier(modifier)
             or (
                 modifier.node_group is not None
                 and modifier.node_group.name.startswith("HT_Mesh_AO")
@@ -205,8 +340,7 @@ def bridge_ao_modifiers(obj):
     return [
         modifier
         for modifier in obj.modifiers
-        if modifier.type == "NODES"
-        and bool(modifier.get(BRIDGE_AO_MODIFIER_PROPERTY))
+        if _is_bridge_ao_modifier(modifier)
     ]
 
 
@@ -230,9 +364,9 @@ def _hair_tool_ao_node_group():
 
 def _apply_ao_settings_to_modifier(modifier, settings):
     for field, (identifier, _fallback) in AO_MODIFIER_FIELDS.items():
-        modifier[identifier] = getattr(settings, field)
-    modifier["Input_7"] = "AO"
-    modifier["Input_16"] = True
+        _modifier_input_set(modifier, identifier, getattr(settings, field))
+    _modifier_input_set(modifier, "Input_7", "AO")
+    _modifier_input_set(modifier, "Input_16", True)
     modifier.show_viewport = True
     modifier.show_render = True
 
@@ -254,10 +388,13 @@ def ensure_per_system_ao_modifier(obj, root):
     if modifiers:
         return None
 
-    modifier = obj.modifiers.new(name="HT_Mesh_AO", type="NODES")
+    modifier = obj.modifiers.new(name=BRIDGE_AO_MODIFIER_NAME, type="NODES")
     try:
         modifier.node_group = _hair_tool_ao_node_group()
-        modifier[BRIDGE_AO_MODIFIER_PROPERTY] = True
+        try:
+            modifier[BRIDGE_AO_MODIFIER_PROPERTY] = True
+        except (AttributeError, TypeError):
+            pass
         _apply_ao_settings_to_modifier(modifier, settings)
     except Exception:
         obj.modifiers.remove(modifier)
@@ -434,7 +571,11 @@ def initialize_ao_bake_settings(root):
         return settings
     modifier = _first_ao_modifier(root)
     values = {
-        field: modifier.get(identifier, fallback) if modifier is not None else fallback
+        field: (
+            _modifier_input_get(modifier, identifier, fallback)
+            if modifier is not None
+            else fallback
+        )
         for field, (identifier, fallback) in AO_MODIFIER_FIELDS.items()
     }
     original = {
@@ -490,7 +631,9 @@ def ao_bake_configuration(root):
     modifier = _first_ao_modifier(root)
     if modifier is not None:
         for field, (identifier, fallback) in AO_MODIFIER_FIELDS.items():
-            configuration[field] = modifier.get(identifier, fallback)
+            configuration[field] = _modifier_input_get(
+                modifier, identifier, fallback
+            )
     return configuration
 
 

@@ -305,6 +305,27 @@ class HTUE_PT_Sidebar(bpy.types.Panel):
         if not getattr(material.htue_settings, "initialized", False):
             layout.operator("htue.setup_active_material", icon="NODETREE")
             return
+        settings = material.htue_settings
+        profile_icon = {
+            "SYNCED": "CHECKMARK",
+            "PENDING": "TIME",
+            "CONFLICT": "ERROR",
+            "ERROR": "ERROR",
+        }.get(settings.profile_sync_status, "INFO")
+        layout.label(
+            text=(
+                f"Shared profile r{settings.profile_revision} · "
+                f"{settings.profile_sync_status.title()}"
+            ),
+            icon=profile_icon,
+        )
+        if settings.profile_sync_error:
+            layout.label(text=settings.profile_sync_error, icon="ERROR")
+        layout.operator(
+            "htue.sync_shared_profile",
+            text="Sync Shared Profile Now",
+            icon="FILE_REFRESH",
+        )
         layout.operator(
             "htue.refresh_contract",
             text="Refresh Connections",

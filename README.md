@@ -62,10 +62,11 @@ the original live Hair Tool systems before it evaluates the export.
 ## Shared Hair profiles
 
 Configured Hair Tool materials use one shared registry named
-`hair_tool_unreal_profiles.json`. By default it lives beside the saved `.blend`
-file, so every character Hair `.blend` in that folder reads and writes the same
-profile IDs. A custom registry path can be assigned per material when files need
-to share profiles across different folders.
+`hair_tool_unreal_profiles.json`. With no explicit registry path, the Bridge first
+reuses an existing registry beside the configured texture folder, then falls back
+to the saved `.blend` folder. Hair and tail files in different folders therefore
+share the same profile when they use the same texture root. A custom registry path
+can still be assigned per material.
 
 Changing a Bridge control schedules an automatic publish after a short debounce.
 Other open Blender files poll the registry and apply a newer revision
@@ -75,6 +76,11 @@ stopped and the material panel reports a conflict instead of silently
 overwriting the newer value. **Sync Now** is retained for recovery and status
 checks. Saving a `.blend` or starting the existing Unreal handoff flushes pending
 changes first.
+
+Legacy Hair Tool materials that expose a top-level `Albedo` input are supported
+without editing their original node group. The Bridge installs a reversible
+top-level color stack, records the prior Albedo link, and restores it on removal.
+The 3D View sidebar shows the active shared-profile revision and sync status.
 
 The registry is written atomically under a short-lived process lock and stores a
 revision plus a content hash for each profile. The unique-name exporter and Send
@@ -120,6 +126,8 @@ selection-driven and only builds the explicitly selected editable source meshes.
 If a material slot has no Height image or no matching Unreal Material Instance
 in the latest valid report, only that slot is skipped and the reason is shown in
 the panel. A failed audit JSON never hides the last complete report.
+If the current Scene has no `M_LayerBlend` material, Sync Data and removal actions
+report that absence as normal information instead of raising a Python error.
 
 Cache objects are unselectable, excluded from render, and hidden during Send to
 Unreal before export geometry is collected. The authored base mesh is therefore
@@ -226,12 +234,12 @@ surface/flow, opacity, and Pixel Depth Offset are placed in clearly marked
 
 ```powershell
 python -m pytest -q
-& "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --factory-startup --python tests\blender_smoke.py
-& "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --factory-startup --python tests\blender_export_masks_smoke.py
-& "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --factory-startup --python tests\layerblend_preview_smoke.py -- --repo "$PWD"
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_smoke.py
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_export_masks_smoke.py
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\layerblend_preview_smoke.py -- --repo "$PWD"
 ```
 
-`tests/blender_smoke.py` runs under Blender 5.1 factory startup and proves that
+`tests/blender_smoke.py` runs under Blender 5.2 factory startup and proves that
 Hair Tool Deformer links survive setup, migration, and restoration while
 legacy material controls remain disconnected from the replacement stack.
 `tests/layerblend_preview_smoke.py` proves selection-independent scene sync,

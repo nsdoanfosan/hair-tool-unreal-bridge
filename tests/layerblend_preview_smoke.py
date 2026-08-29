@@ -128,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix="umb_layerblend_preview_") as temporary:
     stale_host_preview = group_host.modifiers.new(
         layerblend_preview.MODIFIER_NAME, "NODES"
     )
-    stale_host_preview[layerblend_preview.MODIFIER_MARKER] = True
+    layerblend_preview._set_modifier_marker(stale_host_preview)
 
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
@@ -232,7 +232,7 @@ with tempfile.TemporaryDirectory(prefix="umb_layerblend_preview_") as temporary:
     duplicate.node_group = duplicate_group_c
     second_duplicate = obj.modifiers.new(layerblend_preview.MODIFIER_NAME, "NODES")
     second_duplicate.node_group = duplicate_group_b
-    second_duplicate[layerblend_preview.MODIFIER_MARKER] = True
+    layerblend_preview._set_modifier_marker(second_duplicate)
     assert len(layerblend_preview._preview_modifiers(obj)) == 2
     keeper, duplicates_removed = layerblend_preview._consolidate_preview_modifiers(obj)
     assert keeper == second_duplicate

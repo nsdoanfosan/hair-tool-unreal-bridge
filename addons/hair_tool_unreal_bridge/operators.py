@@ -173,7 +173,9 @@ class HTUE_OT_AssignSelectedToExport(bpy.types.Operator):
                     "show_viewport": modifier.show_viewport,
                     "show_render": modifier.show_render,
                     "values": {
-                        identifier: _custom_property_state(modifier, identifier)
+                        identifier: deformer_sync._modifier_input_state(
+                            modifier, identifier
+                        )
                         for identifier in (
                             *(
                                 value[0]
@@ -211,7 +213,9 @@ class HTUE_OT_AssignSelectedToExport(bpy.types.Operator):
                     obj.modifiers.remove(modifier)
             for _obj, modifier, state in ao_modifier_states:
                 for identifier, value_state in state["values"].items():
-                    _restore_custom_property(modifier, identifier, value_state)
+                    deformer_sync._restore_modifier_input(
+                        modifier, identifier, value_state
+                    )
                 modifier.show_viewport = state["show_viewport"]
                 modifier.show_render = state["show_render"]
             deformer_sync.restore_ao_bake_settings(target, target_ao_state)

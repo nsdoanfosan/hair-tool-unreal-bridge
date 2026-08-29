@@ -1,7 +1,10 @@
 import addon_utils
 import bpy
+from pathlib import Path
+import sys
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addons"))
 addon_utils.enable("hair_tool_unreal_bridge", default_set=False, persistent=False)
 
 import hair_tool_unreal_bridge as addon
@@ -233,6 +236,9 @@ assert bpy.data.node_groups.get(f"{schema.SHADER_CLONE_PREFIX}::{material.name}"
 # chosen Empty, preserves world transforms, and directly links only the output.
 setup_geo = bpy.data.node_groups.new("Hair_System_Setup_UI_SMOKE", "GeometryNodeTree")
 profile_geo = bpy.data.node_groups.new("Hair_System_Profile_UI_SMOKE", "GeometryNodeTree")
+setup_parent_socket = setup_geo.interface.new_socket(
+    name="Input Object", in_out="INPUT", socket_type="NodeSocketObject"
+)
 setup_modifier = source_object.modifiers.new("Hair_System_Setup", "NODES")
 setup_modifier.node_group = setup_geo
 profile_modifier = source_object.modifiers.new("Profile", "NODES")
@@ -251,18 +257,36 @@ bpy.context.scene.collection.objects.link(system_root)
 bpy.context.scene.collection.objects.link(system_guide)
 guide_setup_modifier = system_guide.modifiers.new("Hair_System_Setup", "NODES")
 guide_setup_modifier.node_group = setup_geo
-guide_setup_modifier["Input_3"] = system_root
-setup_modifier["Input_3"] = system_guide
+deformer_sync._modifier_input_set(
+    guide_setup_modifier, setup_parent_socket.identifier, system_root
+)
+deformer_sync._modifier_input_set(
+    setup_modifier, setup_parent_socket.identifier, system_guide
+)
 source_world = source_object.matrix_world.copy()
 system_root.parent = empty_a
 system_guide.parent = system_root
 source_object.parent = system_guide
 source_object.matrix_world = source_world
 ao_geo = bpy.data.node_groups.new("HT_Mesh_AO", "GeometryNodeTree")
+for socket_name, socket_type in (
+    ("Use AO", "NodeSocketBool"),
+    ("Samples", "NodeSocketInt"),
+    ("Base Color Value", "NodeSocketFloat"),
+    ("Spread Ange", "NodeSocketFloat"),
+    ("Blur Steps", "NodeSocketInt"),
+    ("First Bounce Factor", "NodeSocketFloat"),
+    ("Second Bounce Factor", "NodeSocketFloat"),
+    ("Use Custom Normals", "NodeSocketBool"),
+    ("AO Attribute Name", "NodeSocketString"),
+):
+    ao_geo.interface.new_socket(
+        name=socket_name, in_out="INPUT", socket_type=socket_type
+    )
 ao_modifier = source_object.modifiers.new("HT_Mesh_AO", "NODES")
 ao_modifier.node_group = ao_geo
-ao_modifier["Input_3"] = 13
-ao_modifier["Input_8"] = "invalid"
+deformer_sync._modifier_input_set(ao_modifier, "Input_3", 13)
+deformer_sync._modifier_input_set(ao_modifier, "Input_8", "invalid")
 empty_a.hide_render = True
 empty_a.hide_set(True)
 bpy.ops.object.select_all(action="DESELECT")
@@ -303,7 +327,7 @@ assert not empty_b.htue_ao_settings.initialized
 assert empty_b.htue_ao_settings.samples == 8
 assert empty_b.htue_ao_settings.blur_steps == 1
 assert not deformer_sync.ao_settings_initializing(empty_b)
-ao_modifier["Input_8"] = 3
+deformer_sync._modifier_input_set(ao_modifier, "Input_8", 3)
 
 # An existing direct link is initialized during the non-draw load migration.
 export_collection.objects.link(source_object)
@@ -336,15 +360,16 @@ assert deformer_sync._first_ao_modifier(empty_a) is None
 bridge_ao_modifiers = deformer_sync.ao_modifiers(source_object)
 assert len(bridge_ao_modifiers) == 1
 bridge_ao_modifier = bridge_ao_modifiers[0]
-assert bool(bridge_ao_modifier.get(deformer_sync.BRIDGE_AO_MODIFIER_PROPERTY))
+assert deformer_sync._is_bridge_ao_modifier(bridge_ao_modifier)
+assert bridge_ao_modifier.name.startswith(deformer_sync.BRIDGE_AO_MODIFIER_NAME)
 assert deformer_sync._first_ao_modifier(empty_b) == bridge_ao_modifier
 assert empty_b.htue_ao_settings.initialized
 assert empty_b.htue_ao_settings.samples == 13
 assert empty_b.htue_ao_settings.blur_steps == 3
-assert bridge_ao_modifier["Input_3"] == 13
-assert bridge_ao_modifier["Input_8"] == 3
-assert bridge_ao_modifier["Input_7"] == "AO"
-assert bridge_ao_modifier["Input_16"] is True
+assert deformer_sync._modifier_input_get(bridge_ao_modifier, "Input_3") == 13
+assert deformer_sync._modifier_input_get(bridge_ao_modifier, "Input_8") == 3
+assert deformer_sync._modifier_input_get(bridge_ao_modifier, "Input_7") == "AO"
+assert deformer_sync._modifier_input_get(bridge_ao_modifier, "Input_16") is True
 # Ownership survives a user-facing node-group rename and cannot create a
 # duplicate fallback on the next synchronization.
 original_ao_group_name = ao_geo.name
@@ -355,7 +380,7 @@ assert deformer_sync.ensure_per_system_ao_modifier(source_object, empty_b) is No
 assert deformer_sync.bridge_ao_modifiers(source_object) == [bridge_ao_modifier]
 ao_geo.name = original_ao_group_name
 empty_b.htue_ao_settings.samples = 17
-assert bridge_ao_modifier["Input_3"] == 17
+assert deformer_sync._modifier_input_get(bridge_ao_modifier, "Input_3") == 17
 empty_b.htue_ao_settings.evaluation_mode = "COMBINED"
 assert not bridge_ao_modifier.show_viewport
 assert not bridge_ao_modifier.show_render
@@ -445,22 +470,22 @@ bpy.data.objects.remove(empty_c, do_unlink=True)
 # unrelated non-NODES modifier cannot break unlink cleanup.
 native_ao_modifier = source_object.modifiers.new("HT_Mesh_AO_Native", "NODES")
 native_ao_modifier.node_group = ao_geo
-native_ao_modifier["Input_3"] = 5
-native_ao_modifier["Input_7"] = "NativeAO"
-native_ao_modifier["Input_16"] = False
+deformer_sync._modifier_input_set(native_ao_modifier, "Input_3", 5)
+deformer_sync._modifier_input_set(native_ao_modifier, "Input_7", "NativeAO")
+deformer_sync._modifier_input_set(native_ao_modifier, "Input_16", False)
 native_ao_modifier.show_viewport = False
 native_ao_modifier.show_render = False
 armature_modifier = source_object.modifiers.new("Armature_SMOKE", "ARMATURE")
 assert bpy.ops.htue.assign_selected_to_export(target_empty=empty_b.name) == {"FINISHED"}
-assert native_ao_modifier["Input_3"] == 5
-assert native_ao_modifier["Input_7"] == "NativeAO"
-assert native_ao_modifier["Input_16"] is False
+assert deformer_sync._modifier_input_get(native_ao_modifier, "Input_3") == 5
+assert deformer_sync._modifier_input_get(native_ao_modifier, "Input_7") == "NativeAO"
+assert deformer_sync._modifier_input_get(native_ao_modifier, "Input_16") is False
 assert not native_ao_modifier.show_viewport
 assert not native_ao_modifier.show_render
 assert bpy.ops.htue.remove_selected_from_export() == {"FINISHED"}
 assert native_ao_modifier in source_object.modifiers[:]
 assert armature_modifier in source_object.modifiers[:]
-assert native_ao_modifier["Input_3"] == 5
+assert deformer_sync._modifier_input_get(native_ao_modifier, "Input_3") == 5
 source_object.modifiers.remove(native_ao_modifier)
 source_object.modifiers.remove(armature_modifier)
 
@@ -498,5 +523,38 @@ export_collection.objects.unlink(empty_b)
 assert deformer_sync.export_target(source_object) is None
 assert deformer_sync._find_export_root(source_object) is None
 del source_object[deformer_sync.EXPORT_TARGET_PROPERTY]
+
+# Older Hair Tool files expose a top-level Albedo socket instead of the newer
+# Base/Root/Tip input set. The Bridge must replace that link reversibly without
+# modifying or cloning the legacy group itself.
+legacy_group = bpy.data.node_groups.new("HairShaderMain_Legacy", "ShaderNodeTree")
+legacy_group.interface.new_socket(
+    name="Albedo", in_out="INPUT", socket_type="NodeSocketColor"
+)
+legacy_group.interface.new_socket(
+    name="Shader", in_out="OUTPUT", socket_type="NodeSocketShader"
+)
+legacy_material = bpy.data.materials.new("HT_Default_Material_short_01")
+legacy_material.use_nodes = True
+legacy_shader = legacy_material.node_tree.nodes.new("ShaderNodeGroup")
+legacy_shader.name = "HairShaderMain"
+legacy_shader.node_tree = legacy_group
+legacy_system = legacy_material.node_tree.nodes.new("ShaderNodeAttribute")
+legacy_system.name = "Legacy SystemColor"
+legacy_system.attribute_name = "SystemColor"
+legacy_material.node_tree.links.new(
+    legacy_system.outputs["Color"], legacy_shader.inputs["Albedo"]
+)
+legacy_stack = nodes.setup_material(legacy_material)
+assert legacy_stack == legacy_material.node_tree.nodes[schema.BRIDGE_NODE_NAME]
+assert legacy_shader.node_tree == legacy_group
+assert legacy_shader.inputs["Albedo"].links[0].from_node == legacy_stack
+assert legacy_material.htue_settings.texture_set == "Hair_Short_01"
+legacy_material.htue_settings.root_mix = 0.42
+assert abs(legacy_stack.inputs["HT Root Mix"].default_value - 0.42) < 1.0e-6
+nodes.restore_material(legacy_material)
+assert legacy_shader.node_tree == legacy_group
+assert legacy_shader.inputs["Albedo"].links[0].from_node == legacy_system
+assert legacy_material.node_tree.nodes.get(schema.BRIDGE_NODE_NAME) is None
 
 print("HTUE_BLENDER_SMOKE_OK")

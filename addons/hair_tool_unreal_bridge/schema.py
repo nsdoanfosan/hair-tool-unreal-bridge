@@ -23,6 +23,13 @@ TARGET_TEXTURE_SETS = {
     "M_HT_Default_Material_short_02": "Hair_Short_02",
 }
 
+
+def target_texture_set(material_name):
+    """Resolve both current ``M_`` names and legacy Blender material names."""
+    name = str(material_name or "")
+    canonical = name if name.startswith("M_") else f"M_{name}"
+    return TARGET_TEXTURE_SETS.get(canonical, "")
+
 DEFAULT_TEXTURE_ROOT = Path(
     r"D:\OneDrive\Forestportfolio\Characters\MainCharacter\03_Hair\texture"
 )
@@ -136,7 +143,7 @@ def build_contract(material_name, settings):
         for field_name, unreal_name in SCALAR_FIELDS.items()
     }
     sync_parameters = sorted(set(vectors) | set(scalars))
-    texture_set = str(settings.texture_set or TARGET_TEXTURE_SETS.get(material_name, ""))
+    texture_set = str(settings.texture_set or target_texture_set(material_name))
     return {
         "schema": CONTRACT_SCHEMA,
         "version": CONTRACT_VERSION,
