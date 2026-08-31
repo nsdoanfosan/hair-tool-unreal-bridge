@@ -24,6 +24,7 @@ POLL_INTERVAL_SECONDS = 0.75
 _APPLYING = set()
 _PENDING = {}
 _LAST_REGISTRY_STAMPS = {}
+_DEFORMER_SOURCES_DIRTY = True
 
 
 def _material_key(material):
@@ -313,8 +314,11 @@ def sync_material_now(material):
 
 
 def on_load():
+    global _DEFORMER_SOURCES_DIRTY
+
     _PENDING.clear()
     _LAST_REGISTRY_STAMPS.clear()
+    _DEFORMER_SOURCES_DIRTY = True
     for material in bpy.data.materials:
         if getattr(getattr(material, "htue_settings", None), "initialized", False):
             ensure_material(material, bootstrap=True)
@@ -340,9 +344,54 @@ def _poll_registries():
                 pull_material(material, bootstrap=True)
 
 
+def mark_deformer_sources_dirty(depsgraph=None):
+    """Queue one source-presence refresh after relevant Geometry changes."""
+    global _DEFORMER_SOURCES_DIRTY
+
+    if depsgraph is None:
+        _DEFORMER_SOURCES_DIRTY = True
+        return True
+    data_types = tuple(
+        data_type
+        for data_type in (
+            getattr(bpy.types, "NodeTree", None),
+            getattr(bpy.types, "Mesh", None),
+            getattr(bpy.types, "Curves", None),
+            getattr(bpy.types, "Curve", None),
+        )
+        if data_type is not None
+    )
+    for update in depsgraph.updates:
+        data = update.id
+        if isinstance(data, data_types) or (
+            isinstance(data, bpy.types.Object)
+            and bool(getattr(update, "is_updated_geometry", False))
+        ):
+            _DEFORMER_SOURCES_DIRTY = True
+            return True
+    return False
+
+
+def _refresh_deformer_sources_if_dirty():
+    global _DEFORMER_SOURCES_DIRTY
+
+    if not _DEFORMER_SOURCES_DIRTY:
+        return False
+    _DEFORMER_SOURCES_DIRTY = False
+    from . import nodes
+
+    changed = False
+    for material in bpy.data.materials:
+        settings = getattr(material, "htue_settings", None)
+        if settings is not None and settings.initialized:
+            changed = nodes.refresh_system_attribute_availability(material) or changed
+    return changed
+
+
 def auto_sync_timer():
     flush_pending(force=False)
     _poll_registries()
+    _refresh_deformer_sources_if_dirty()
     return POLL_INTERVAL_SECONDS
 
 
@@ -352,7 +401,10 @@ def register_auto_sync():
 
 
 def unregister_auto_sync():
+    global _DEFORMER_SOURCES_DIRTY
+
     _PENDING.clear()
     _LAST_REGISTRY_STAMPS.clear()
+    _DEFORMER_SOURCES_DIRTY = True
     if bpy.app.timers.is_registered(auto_sync_timer):
         bpy.app.timers.unregister(auto_sync_timer)

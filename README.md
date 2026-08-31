@@ -33,7 +33,11 @@ Unreal-only rendering controls remain owned by Unreal.
 `Set Factor`, `Set System Color`, Random, AO, and Depth stay connected through
 Hair Tool's own Attribute nodes. A missing native input is filled without
 replacing any existing link, and the added link is recorded so Restore can
-remove it. Missing Blender AO data is neutralized inside the preview; AO is
+remove it. On Blender 5.2, Curves Geometry Nodes can draw a stored attribute
+while the evaluated Python data exposes no attributes and cannot convert to a
+mesh. The Bridge therefore verifies reachable `Store Named Attribute` nodes on
+the final Geometry path and refreshes SystemColor availability only after a
+relevant geometry or node-tree update. Missing Blender AO data is neutralized inside the preview; AO is
 enabled only when it exists on evaluated viewport geometry. The bridge does not
 force the expensive AO generator onto every live system. In **Per System** mode,
 only an explicitly linked final output that has no native AO modifier receives

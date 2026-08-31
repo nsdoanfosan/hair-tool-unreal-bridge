@@ -465,8 +465,101 @@ def has_source_attribute(material, attribute_name):
     return False
 
 
+def _literal_named_attribute(node, attribute_name):
+    """Return whether *node* writes one literal named attribute."""
+    if node.bl_idname != "GeometryNodeStoreNamedAttribute" or node.mute:
+        return False
+    name_socket = node.inputs.get("Name")
+    return bool(
+        name_socket is not None
+        and not name_socket.is_linked
+        and str(name_socket.default_value) == attribute_name
+    )
+
+
+def _geometry_input_links(node):
+    for socket in node.inputs:
+        if getattr(socket, "type", None) != "GEOMETRY":
+            continue
+        yield from socket.links
+
+
+def _node_tree_output_writes_attribute(node_tree, attribute_name, visiting=None):
+    """Trace final Geometry outputs and find a reachable Store Named Attribute."""
+    if node_tree is None:
+        return False
+    visiting = set() if visiting is None else visiting
+    pointer = int(node_tree.as_pointer())
+    if pointer in visiting:
+        return False
+    visiting.add(pointer)
+    try:
+        pending = []
+        for output in node_tree.nodes:
+            if output.bl_idname != "NodeGroupOutput":
+                continue
+            pending.extend(link.from_node for link in _geometry_input_links(output))
+
+        visited_nodes = set()
+        while pending:
+            node = pending.pop()
+            node_pointer = int(node.as_pointer())
+            if node_pointer in visited_nodes:
+                continue
+            visited_nodes.add(node_pointer)
+
+            if _literal_named_attribute(node, attribute_name):
+                return True
+            child_tree = getattr(node, "node_tree", None)
+            if (
+                child_tree is not None
+                and not node.mute
+                and _node_tree_output_writes_attribute(
+                    child_tree, attribute_name, visiting
+                )
+            ):
+                return True
+            pending.extend(link.from_node for link in _geometry_input_links(node))
+        return False
+    finally:
+        visiting.remove(pointer)
+
+
+def object_outputs_named_attribute(obj, attribute_name):
+    """Report a literal attribute producer in the enabled modifier stack."""
+    attributes = getattr(getattr(obj, "data", None), "attributes", None)
+    if attributes and attributes.get(attribute_name) is not None:
+        return True
+    return any(
+        modifier.type == "NODES"
+        and modifier.show_viewport
+        and _node_tree_output_writes_attribute(
+            getattr(modifier, "node_group", None), attribute_name
+        )
+        for modifier in getattr(obj, "modifiers", ())
+        if getattr(modifier, "node_group", None) is not None
+    )
+
+
+def has_structural_source_attribute(material, attribute_name):
+    """Detect direct or Geometry Nodes-produced data without evaluated conversion.
+
+    Blender 5.2 can expose a Curves Geometry Nodes result in the viewport while
+    ``evaluated.data.attributes`` remains empty and ``to_mesh`` raises.  The
+    final Geometry path is therefore also authoritative evidence for Hair Tool
+    Store Named Attribute deformers.
+    """
+    return any(
+        _uses_material(obj, material)
+        and object_outputs_named_attribute(obj, attribute_name)
+        for obj in bpy.data.objects
+    )
+
+
 def has_evaluated_source_attribute(material, attribute_name):
     """Report an attribute only when Hair Tool actually outputs it to the viewport."""
+    if has_structural_source_attribute(material, attribute_name):
+        return True
     depsgraph = bpy.context.evaluated_depsgraph_get()
     for obj in bpy.data.objects:
         if not _uses_material(obj, material):

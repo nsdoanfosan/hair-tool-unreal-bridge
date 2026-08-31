@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Unreal Material Bridge",
     "author": "PARK / OpenAI Codex",
-    "version": (0, 9, 0),
+    "version": (0, 9, 1),
     "blender": (5, 1, 0),
     "location": "3D View > Unreal Bridge; Material Properties > Unreal Material Bridge",
     "description": "Synchronize Hair Tool materials and preview M_LayerBlend height from Unreal",
@@ -58,6 +58,12 @@ def flush_profiles_before_save(_unused):
     profile_sync.flush_pending(force=True)
 
 
+@persistent
+def mark_deformer_sources_on_update(_scene, depsgraph):
+    """Debounce Hair Tool attribute-presence checks after Geometry changes."""
+    profile_sync.mark_deformer_sources_dirty(depsgraph)
+
+
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
@@ -79,6 +85,8 @@ def register():
         bpy.app.handlers.load_post.append(migrate_bridge_ui_on_load)
     if flush_profiles_before_save not in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.append(flush_profiles_before_save)
+    if mark_deformer_sources_on_update not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(mark_deformer_sources_on_update)
     if not bpy.app.timers.is_registered(initialize_export_ao_after_register):
         bpy.app.timers.register(initialize_export_ao_after_register, first_interval=0.0)
     profile_sync.register_auto_sync()
@@ -95,6 +103,8 @@ def unregister():
         bpy.app.handlers.load_post.remove(migrate_bridge_ui_on_load)
     if flush_profiles_before_save in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.remove(flush_profiles_before_save)
+    if mark_deformer_sources_on_update in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(mark_deformer_sources_on_update)
     if hasattr(bpy.types.Material, "htue_settings"):
         del bpy.types.Material.htue_settings
     if hasattr(bpy.types.Object, "htue_ao_settings"):

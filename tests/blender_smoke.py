@@ -8,11 +8,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addons"))
 addon_utils.enable("hair_tool_unreal_bridge", default_set=False, persistent=False)
 
 import hair_tool_unreal_bridge as addon
-from hair_tool_unreal_bridge import contract, deformer_sync, export_masks, nodes, operators, schema
+from hair_tool_unreal_bridge import (
+    contract,
+    deformer_sync,
+    export_masks,
+    nodes,
+    operators,
+    profile_sync,
+    schema,
+)
 
 
 assert addon.migrate_bridge_ui_on_load in bpy.app.handlers.load_post
 assert addon.flush_profiles_before_save in bpy.app.handlers.save_pre
+assert addon.mark_deformer_sources_on_update in bpy.app.handlers.depsgraph_update_post
 assert hasattr(bpy.types.Object, "htue_ao_settings")
 assert bpy.types.HTUE_PT_sidebar.bl_category == "Unreal Bridge"
 assert hasattr(bpy.types.Object, "umb_layerblend_preview")
@@ -124,6 +133,83 @@ system_colors.data[0].color = (0.1, 0.2, 0.3, 0.0)
 system_colors.data[1].color = (0.8, 0.6, 0.4, 1.0)
 source_object = bpy.data.objects.new("HTUE_Deformer_Source", mesh)
 bpy.context.scene.collection.objects.link(source_object)
+
+# Blender 5.2 may display a Curves Geometry Nodes result while exposing no
+# evaluated data attributes to Python.  A reachable Store Named Attribute on
+# the final Geometry path must still enable SystemColor, and a disabled
+# modifier must remove that evidence again.
+structural_material = bpy.data.materials.new("M_HT_Structural_SystemColor")
+structural_material.use_nodes = True
+structural_shader = structural_material.node_tree.nodes.new("ShaderNodeGroup")
+structural_shader.name = "HairShaderMain"
+structural_shader.node_tree = hair_group
+structural_mesh = bpy.data.meshes.new("HTUE_Structural_SystemColor_Source")
+structural_mesh.from_pydata([(0.0, 0.0, 0.0)], [], [])
+structural_mesh.materials.append(structural_material)
+structural_object = bpy.data.objects.new(
+    "HTUE_Structural_SystemColor_Source", structural_mesh
+)
+bpy.context.scene.collection.objects.link(structural_object)
+
+structural_store = bpy.data.node_groups.new(
+    "HD_Color_Structural_SMOKE", "GeometryNodeTree"
+)
+structural_store.interface.new_socket(
+    name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry"
+)
+structural_store.interface.new_socket(
+    name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
+)
+structural_input = structural_store.nodes.new("NodeGroupInput")
+structural_output = structural_store.nodes.new("NodeGroupOutput")
+system_store = structural_store.nodes.new("GeometryNodeStoreNamedAttribute")
+system_store.data_type = "BYTE_COLOR"
+system_store.domain = "POINT"
+system_store.inputs["Name"].default_value = "SystemColor"
+structural_store.links.new(
+    structural_input.outputs["Geometry"], system_store.inputs["Geometry"]
+)
+structural_store.links.new(
+    system_store.outputs["Geometry"], structural_output.inputs["Geometry"]
+)
+
+structural_wrapper = bpy.data.node_groups.new(
+    "HTUE_Structural_Wrapper_SMOKE", "GeometryNodeTree"
+)
+structural_wrapper.interface.new_socket(
+    name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry"
+)
+structural_wrapper.interface.new_socket(
+    name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
+)
+wrapper_input = structural_wrapper.nodes.new("NodeGroupInput")
+wrapper_output = structural_wrapper.nodes.new("NodeGroupOutput")
+store_group_node = structural_wrapper.nodes.new("GeometryNodeGroup")
+store_group_node.node_tree = structural_store
+structural_wrapper.links.new(
+    wrapper_input.outputs["Geometry"], store_group_node.inputs["Geometry"]
+)
+structural_wrapper.links.new(
+    store_group_node.outputs["Geometry"], wrapper_output.inputs["Geometry"]
+)
+structural_modifier = structural_object.modifiers.new(
+    "HTUE Structural SystemColor", "NODES"
+)
+structural_modifier.node_group = structural_wrapper
+
+assert deformer_sync.has_structural_source_attribute(
+    structural_material, "SystemColor"
+)
+structural_stack = nodes.setup_material(structural_material)
+assert structural_stack.inputs["System Attribute Available"].default_value == 1.0
+structural_stack.inputs["System Attribute Available"].default_value = 0.0
+profile_sync.mark_deformer_sources_dirty()
+profile_sync.auto_sync_timer()
+assert structural_stack.inputs["System Attribute Available"].default_value == 1.0
+structural_modifier.show_viewport = False
+profile_sync.mark_deformer_sources_dirty()
+profile_sync.auto_sync_timer()
+assert structural_stack.inputs["System Attribute Available"].default_value == 0.0
 
 stack = nodes.setup_material(material)
 assert stack is not None

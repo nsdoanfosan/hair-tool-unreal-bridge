@@ -1,6 +1,8 @@
 import addon_utils
 import bpy
 import math
+import sys
+import types
 
 
 addon_utils.enable("hair_tool_unreal_bridge", default_set=False, persistent=False)
@@ -10,6 +12,59 @@ from hair_tool_unreal_bridge import export_masks
 
 weight_group = export_masks.ensure_mask_group("WEIGHT")
 pdo_group = export_masks.ensure_mask_group("PIXEL_DEPTH_OFFSET")
+
+# The vertex-color extension may add only its own registries and node groups.
+# It must never mutate Hair Tool's core Factor/SystemColor definitions.
+core_factor = bpy.data.node_groups.new("HD_FactorSet", "GeometryNodeTree")
+core_factor.nodes.new("GeometryNodeStoreNamedAttribute").inputs[
+    "Name"
+].default_value = "Factor"
+core_color = bpy.data.node_groups.new("HD_Color", "GeometryNodeTree")
+core_color.nodes.new("GeometryNodeStoreNamedAttribute").inputs[
+    "Name"
+].default_value = "SystemColor"
+
+
+def group_signature(group):
+    return (
+        tuple(sorted((node.name, node.bl_idname) for node in group.nodes)),
+        tuple(
+            sorted(
+                (
+                    link.from_node.name,
+                    link.from_socket.name,
+                    link.to_node.name,
+                    link.to_socket.name,
+                )
+                for link in group.links
+            )
+        ),
+    )
+
+
+core_before = (group_signature(core_factor), group_signature(core_color))
+fake_hair_tool = types.ModuleType("hair_tool")
+fake_hair_tool.__path__ = []
+fake_material_operators = types.ModuleType("hair_tool.material_operators")
+fake_material_operators.DEFAULT_PREVIEW_ATTR_NAMES = ["Factor", "SystemColor"]
+fake_hair_baking = types.ModuleType("hair_tool.hair_baking")
+fake_hair_baking.__path__ = []
+fake_shared = types.ModuleType("hair_tool.hair_baking.hair_geometry_nodes_shared")
+fake_shared.deformer_labels = {"HD_FactorSet": "Set Factor", "HD_Color": "Set System Color"}
+fake_shared.node_configs = {}
+fake_shared.hair_deformer_groups = ("HD_FactorSet", "HD_Color")
+fake_shared.not_mutable_nodes = ["HD_FactorSet", "HD_Color"]
+fake_shared.remap_curve_root_to_tip_node_gr_name = "RootToTip"
+fake_hair_tool.material_operators = fake_material_operators
+fake_hair_baking.hair_geometry_nodes_shared = fake_shared
+sys.modules["hair_tool"] = fake_hair_tool
+sys.modules["hair_tool.material_operators"] = fake_material_operators
+sys.modules["hair_tool.hair_baking"] = fake_hair_baking
+sys.modules["hair_tool.hair_baking.hair_geometry_nodes_shared"] = fake_shared
+assert export_masks.install_runtime_integration()
+assert core_before == (group_signature(core_factor), group_signature(core_color))
+assert "HTUE_Export_Weight" in fake_shared.deformer_labels
+assert "HTUE_Export_PixelDepthOffset" in fake_shared.deformer_labels
 
 mesh = bpy.data.meshes.new("HTUE_EXPORT_MASK_SOURCE")
 mesh.from_pydata(
