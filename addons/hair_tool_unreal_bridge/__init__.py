@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Unreal Material Bridge",
     "author": "PARK / OpenAI Codex",
-    "version": (0, 9, 1),
+    "version": (0, 9, 2),
     "blender": (5, 1, 0),
     "location": "3D View > Unreal Bridge; Material Properties > Unreal Material Bridge",
     "description": "Synchronize Hair Tool materials and preview M_LayerBlend height from Unreal",
@@ -19,6 +19,7 @@ CLASSES = (
     properties.CLASSES
     + operators.CLASSES
     + export_masks.OPERATOR_CLASSES
+    + export_masks.MENU_CLASSES
     + ui.CLASSES
     + export_masks.PANEL_CLASSES
     + layerblend_preview.CLASSES
@@ -55,7 +56,7 @@ def migrate_bridge_ui_on_load(_unused):
 
 @persistent
 def flush_profiles_before_save(_unused):
-    profile_sync.flush_pending(force=True)
+    profile_sync.sync_all_materials_now()
 
 
 @persistent

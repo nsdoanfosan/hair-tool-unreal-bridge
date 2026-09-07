@@ -1,8 +1,7 @@
-"""Automatic hub-and-spoke synchronization for Hair Tool material controls."""
+"""Explicit shared-profile sync and event-driven Hair Tool source checks."""
 
 import json
 from pathlib import Path
-import time
 import uuid
 
 import bpy
@@ -18,13 +17,13 @@ PROFILE_FIELDS = (
     *schema.VECTOR_FIELDS.keys(),
     *schema.SCALAR_FIELDS.keys(),
 )
-PUBLISH_DELAY_SECONDS = 0.45
-POLL_INTERVAL_SECONDS = 0.75
-
 _APPLYING = set()
 _PENDING = {}
-_LAST_REGISTRY_STAMPS = {}
 _DEFORMER_SOURCES_DIRTY = True
+_DEFORMER_NODE_TREE_CACHE = {}
+_SYSTEM_SOURCE_DATA_STATES = {}
+_SYSTEM_SOURCE_OBJECT_STATES = {}
+_SYSTEM_SOURCE_NODE_TREE_STATES = {}
 
 
 def _material_key(material):
@@ -132,14 +131,6 @@ def _apply_record(material, record):
         _APPLYING.discard(key)
 
 
-def _registry_stamp(path):
-    try:
-        stat = Path(path).stat()
-    except OSError:
-        return None
-    return (stat.st_mtime_ns, stat.st_size)
-
-
 def pull_material(material, bootstrap=False):
     if not getattr(material.htue_settings, "initialized", False):
         return False
@@ -173,7 +164,6 @@ def pull_material(material, bootstrap=False):
         settings.profile_sync_error = ""
         return False
     _apply_record(material, record)
-    _LAST_REGISTRY_STAMPS[str(path)] = _registry_stamp(path)
     return True
 
 
@@ -246,11 +236,11 @@ def _publish_material(material, changed_fields, force=False):
     from . import contract
 
     contract.persist_material_contract(material)
-    _LAST_REGISTRY_STAMPS[str(path)] = _registry_stamp(path)
     return bool(result.get("changed"))
 
 
 def schedule_publish(material, changed_fields, immediate=False):
+    """Remember local edits until save or an explicit profile sync."""
     if is_applying_profile(material):
         return
     path = registry_path(material)
@@ -269,7 +259,6 @@ def schedule_publish(material, changed_fields, immediate=False):
         "key": key,
         "name": material.name,
         "fields": fields,
-        "deadline": time.monotonic() if immediate else time.monotonic() + PUBLISH_DELAY_SECONDS,
     }
     material.htue_settings.profile_sync_status = "PENDING"
     material.htue_settings.profile_sync_error = ""
@@ -285,10 +274,8 @@ def flush_material(material, force=False):
 
 
 def flush_pending(force=False):
-    now = time.monotonic()
+    """Compatibility helper that publishes every queued local edit."""
     for key, item in list(_PENDING.items()):
-        if not force and float(item.get("deadline", 0.0)) > now:
-            continue
         _PENDING.pop(key, None)
         material = _material_from_pending(item)
         if material is not None:
@@ -313,98 +300,236 @@ def sync_material_now(material):
     return bool(pulled or published)
 
 
-def on_load():
-    global _DEFORMER_SOURCES_DIRTY
-
-    _PENDING.clear()
-    _LAST_REGISTRY_STAMPS.clear()
-    _DEFORMER_SOURCES_DIRTY = True
-    for material in bpy.data.materials:
-        if getattr(getattr(material, "htue_settings", None), "initialized", False):
-            ensure_material(material, bootstrap=True)
-
-
-def _poll_registries():
-    paths = {}
+def sync_all_materials_now():
+    """Synchronize configured shared profiles once at an explicit boundary."""
+    synchronized = []
     for material in bpy.data.materials:
         settings = getattr(material, "htue_settings", None)
         if settings is None or not settings.initialized:
             continue
-        path = registry_path(material)
-        if path is not None:
-            paths.setdefault(str(path), []).append(material)
-    for path_text, materials in paths.items():
-        stamp = _registry_stamp(path_text)
-        previous = _LAST_REGISTRY_STAMPS.get(path_text)
-        if previous == stamp:
-            continue
-        _LAST_REGISTRY_STAMPS[path_text] = stamp
-        for material in materials:
-            if _material_key(material) not in _PENDING:
-                pull_material(material, bootstrap=True)
+        sync_material_now(material)
+        synchronized.append(material.name)
+    return synchronized
+
+
+def on_load():
+    global _DEFORMER_SOURCES_DIRTY
+
+    _PENDING.clear()
+    _DEFORMER_NODE_TREE_CACHE.clear()
+    _SYSTEM_SOURCE_DATA_STATES.clear()
+    _SYSTEM_SOURCE_OBJECT_STATES.clear()
+    _SYSTEM_SOURCE_NODE_TREE_STATES.clear()
+    _DEFORMER_SOURCES_DIRTY = True
+    for material in bpy.data.materials:
+        if getattr(getattr(material, "htue_settings", None), "initialized", False):
+            ensure_material(material, bootstrap=True)
+    register_auto_sync()
+
+
+def _rna_key(value):
+    original = getattr(value, "original", None)
+    return int((original or value).as_pointer())
+
+
+def _data_system_source_state(data):
+    data = getattr(data, "original", None) or data
+    attributes = getattr(data, "attributes", None)
+    return (
+        bool(attributes and attributes.get("SystemColor") is not None),
+        tuple(
+            _rna_key(material) if material is not None else None
+            for material in getattr(data, "materials", ())
+        ),
+    )
+
+
+def _object_system_source_state(obj):
+    obj = getattr(obj, "original", None) or obj
+    data = getattr(obj, "data", None)
+    modifiers = tuple(
+        (
+            int(modifier.as_pointer()),
+            bool(modifier.show_viewport),
+            _rna_key(modifier.node_group),
+        )
+        for modifier in getattr(obj, "modifiers", ())
+        if modifier.type == "NODES" and modifier.node_group is not None
+    )
+    return (
+        _rna_key(data) if data is not None else None,
+        _data_system_source_state(data) if data is not None else False,
+        modifiers,
+        tuple(
+            _rna_key(slot.material) if slot.material is not None else None
+            for slot in getattr(obj, "material_slots", ())
+        ),
+    )
+
+
+def _node_tree_system_source_state(node_tree):
+    node_tree = getattr(node_tree, "original", None) or node_tree
+    nodes = []
+    for node in node_tree.nodes:
+        child_tree = getattr(node, "node_tree", None)
+        named_attribute = None
+        if node.bl_idname == "GeometryNodeStoreNamedAttribute":
+            name_socket = node.inputs.get("Name")
+            if name_socket is not None:
+                named_attribute = (
+                    bool(name_socket.is_linked),
+                    str(name_socket.default_value),
+                )
+        nodes.append(
+            (
+                int(node.as_pointer()),
+                str(node.bl_idname),
+                bool(node.mute),
+                _rna_key(child_tree) if child_tree is not None else None,
+                named_attribute,
+            )
+        )
+    links = tuple(
+        (
+            int(link.from_node.as_pointer()),
+            str(link.from_socket.identifier),
+            int(link.to_node.as_pointer()),
+            str(link.to_socket.identifier),
+        )
+        for link in node_tree.links
+    )
+    return (tuple(nodes), links)
+
+
+def _remember_system_source_state(obj):
+    try:
+        data = getattr(obj, "data", None)
+        if data is not None:
+            _SYSTEM_SOURCE_DATA_STATES[_rna_key(data)] = _data_system_source_state(
+                data
+            )
+        _SYSTEM_SOURCE_OBJECT_STATES[_rna_key(obj)] = _object_system_source_state(obj)
+    except ReferenceError:
+        pass
+
+
+def _state_changed(cache, key, state):
+    marker = object()
+    previous = cache.get(key, marker)
+    cache[key] = state
+    return previous is marker or previous != state
 
 
 def mark_deformer_sources_dirty(depsgraph=None):
-    """Queue one source-presence refresh after relevant Geometry changes."""
+    """Queue a refresh only when SystemColor source presence can change."""
     global _DEFORMER_SOURCES_DIRTY
 
     if depsgraph is None:
         _DEFORMER_SOURCES_DIRTY = True
+        register_auto_sync()
         return True
-    data_types = tuple(
+    geometry_data_types = tuple(
         data_type
         for data_type in (
-            getattr(bpy.types, "NodeTree", None),
             getattr(bpy.types, "Mesh", None),
             getattr(bpy.types, "Curves", None),
             getattr(bpy.types, "Curve", None),
         )
         if data_type is not None
     )
+    changed_any = False
+    clear_node_cache = False
     for update in depsgraph.updates:
         data = update.id
-        if isinstance(data, data_types) or (
-            isinstance(data, bpy.types.Object)
-            and bool(getattr(update, "is_updated_geometry", False))
+        changed = False
+        if isinstance(data, bpy.types.Object) and bool(
+            getattr(update, "is_updated_geometry", False)
+            or getattr(update, "is_updated_shading", False)
         ):
-            _DEFORMER_SOURCES_DIRTY = True
-            return True
-    return False
+            key = _rna_key(data)
+            changed = _state_changed(
+                _SYSTEM_SOURCE_OBJECT_STATES,
+                key,
+                _object_system_source_state(data),
+            )
+        elif isinstance(data, geometry_data_types):
+            key = _rna_key(data)
+            changed = _state_changed(
+                _SYSTEM_SOURCE_DATA_STATES,
+                key,
+                _data_system_source_state(data),
+            )
+        elif isinstance(data, bpy.types.NodeTree) and (
+            getattr(data, "bl_idname", "") == "GeometryNodeTree"
+        ):
+            key = _rna_key(data)
+            changed = _state_changed(
+                _SYSTEM_SOURCE_NODE_TREE_STATES,
+                key,
+                _node_tree_system_source_state(data),
+            )
+            clear_node_cache = clear_node_cache or changed
+        changed_any = changed_any or changed
+    if not changed_any:
+        return False
+    if clear_node_cache:
+        _DEFORMER_NODE_TREE_CACHE.clear()
+    _DEFORMER_SOURCES_DIRTY = True
+    register_auto_sync()
+    return True
 
 
 def _refresh_deformer_sources_if_dirty():
+    """Re-index material users and refresh SystemColor with shared graph results."""
     global _DEFORMER_SOURCES_DIRTY
 
     if not _DEFORMER_SOURCES_DIRTY:
         return False
     _DEFORMER_SOURCES_DIRTY = False
-    from . import nodes
 
+    from . import deformer_sync, nodes
+
+    materials = [
+        material
+        for material in bpy.data.materials
+        if getattr(getattr(material, "htue_settings", None), "initialized", False)
+    ]
+    availability = deformer_sync.structural_source_availability(
+        materials,
+        "SystemColor",
+        cache=_DEFORMER_NODE_TREE_CACHE,
+    )
     changed = False
-    for material in bpy.data.materials:
-        settings = getattr(material, "htue_settings", None)
-        if settings is not None and settings.initialized:
-            changed = nodes.refresh_system_attribute_availability(material) or changed
+    for material, available in zip(materials, availability):
+        try:
+            changed = nodes.set_system_attribute_availability(
+                material, available
+            ) or changed
+        except ReferenceError:
+            pass
+    for obj in bpy.data.objects:
+        _remember_system_source_state(obj)
     return changed
 
 
 def auto_sync_timer():
-    flush_pending(force=False)
-    _poll_registries()
     _refresh_deformer_sources_if_dirty()
-    return POLL_INTERVAL_SECONDS
+    return None
 
 
 def register_auto_sync():
     if not bpy.app.timers.is_registered(auto_sync_timer):
-        bpy.app.timers.register(auto_sync_timer, first_interval=0.25, persistent=True)
+        bpy.app.timers.register(auto_sync_timer, first_interval=0.25)
 
 
 def unregister_auto_sync():
     global _DEFORMER_SOURCES_DIRTY
 
     _PENDING.clear()
-    _LAST_REGISTRY_STAMPS.clear()
+    _DEFORMER_NODE_TREE_CACHE.clear()
+    _SYSTEM_SOURCE_DATA_STATES.clear()
+    _SYSTEM_SOURCE_OBJECT_STATES.clear()
+    _SYSTEM_SOURCE_NODE_TREE_STATES.clear()
     _DEFORMER_SOURCES_DIRTY = True
     if bpy.app.timers.is_registered(auto_sync_timer):
         bpy.app.timers.unregister(auto_sync_timer)

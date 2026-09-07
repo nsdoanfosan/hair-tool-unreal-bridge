@@ -2,6 +2,7 @@ import addon_utils
 import bpy
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addons"))
@@ -45,7 +46,7 @@ weight_group = export_masks.ensure_mask_group("WEIGHT")
 pdo_group = export_masks.ensure_mask_group("PIXEL_DEPTH_OFFSET")
 assert weight_group[export_masks.GROUP_MARKER] == "ChaosWeight"
 assert pdo_group[export_masks.GROUP_MARKER] == "HairPixelDepthOffset"
-assert weight_group.nodes["Store ChaosWeight"].data_type == "BYTE_COLOR"
+assert weight_group.nodes["Store ChaosWeight"].data_type == "FLOAT_COLOR"
 assert pdo_group.nodes["Store HairPixelDepthOffset"].data_type == "BYTE_COLOR"
 
 
@@ -206,10 +207,81 @@ structural_stack.inputs["System Attribute Available"].default_value = 0.0
 profile_sync.mark_deformer_sources_dirty()
 profile_sync.auto_sync_timer()
 assert structural_stack.inputs["System Attribute Available"].default_value == 1.0
+
+# A warm full rescan must reuse the structural result of shared node groups.
+structural_cache = {}
+assert deformer_sync.structural_source_availability(
+    (structural_material,), "SystemColor", cache=structural_cache
+) == [True]
+assert structural_cache
+original_literal_check = deformer_sync._literal_named_attribute
+deformer_sync._literal_named_attribute = lambda *_args: (_ for _ in ()).throw(
+    AssertionError("warm structural cache was not reused")
+)
+try:
+    assert deformer_sync.structural_source_availability(
+        (structural_material,), "SystemColor", cache=structural_cache
+    ) == [True]
+finally:
+    deformer_sync._literal_named_attribute = original_literal_check
+
 structural_modifier.show_viewport = False
 profile_sync.mark_deformer_sources_dirty()
 profile_sync.auto_sync_timer()
 assert structural_stack.inputs["System Attribute Available"].default_value == 0.0
+
+# Ordinary geometry updates do not change SystemColor source presence and must
+# not request another global scan.  Adding the direct attribute does.
+profile_sync._remember_system_source_state(structural_object)
+profile_sync._DEFORMER_SOURCES_DIRTY = False
+object_update = SimpleNamespace(
+    id=structural_object,
+    is_updated_geometry=True,
+)
+depsgraph_update = SimpleNamespace(updates=[object_update])
+assert not profile_sync.mark_deformer_sources_dirty(depsgraph_update)
+assert not profile_sync._DEFORMER_SOURCES_DIRTY
+
+system_attribute = structural_mesh.attributes.new(
+    "SystemColor", "BYTE_COLOR", "POINT"
+)
+assert profile_sync.mark_deformer_sources_dirty(depsgraph_update)
+original_object_check = deformer_sync.object_outputs_named_attribute
+deformer_sync.object_outputs_named_attribute = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    AssertionError("direct SystemColor should bypass Geometry Nodes traversal")
+)
+try:
+    assert deformer_sync.structural_source_availability(
+        (structural_material,), "SystemColor", cache={}
+    ) == [True]
+finally:
+    deformer_sync.object_outputs_named_attribute = original_object_check
+
+# Reassigning a material changes which preview receives SystemColor even when
+# the mesh and its attribute producer are otherwise unchanged.
+replacement_material = bpy.data.materials.new("M_HT_SystemColor_Reassigned")
+profile_sync._remember_system_source_state(structural_object)
+profile_sync._DEFORMER_SOURCES_DIRTY = False
+structural_object.material_slots[0].link = "OBJECT"
+structural_object.material_slots[0].material = replacement_material
+shading_update = SimpleNamespace(
+    id=structural_object, is_updated_geometry=False, is_updated_shading=True
+)
+assert profile_sync.mark_deformer_sources_dirty(
+    SimpleNamespace(updates=[shading_update])
+), "Object material-slot edits must invalidate source availability"
+assert deformer_sync.structural_source_availability(
+    (structural_material, replacement_material), "SystemColor", cache={}
+) == [False, True]
+structural_object.material_slots[0].link = "DATA"
+profile_sync._remember_system_source_state(structural_object)
+profile_sync._DEFORMER_SOURCES_DIRTY = False
+structural_mesh.materials[0] = replacement_material
+assert profile_sync.mark_deformer_sources_dirty(
+    SimpleNamespace(updates=[SimpleNamespace(id=structural_mesh)])
+), "Mesh material-slot edits must invalidate source availability"
+structural_mesh.materials[0] = structural_material
+structural_mesh.attributes.remove(system_attribute)
 
 stack = nodes.setup_material(material)
 assert stack is not None

@@ -7,6 +7,7 @@ import bpy
 
 addon_utils.enable("hair_tool_unreal_bridge", default_set=False, persistent=False)
 
+import hair_tool_unreal_bridge as addon
 from hair_tool_unreal_bridge import profile_registry, profile_sync
 
 
@@ -27,6 +28,15 @@ source.htue_settings.base_color = (0.1, 0.2, 0.3, 1.0)
 profile_sync.flush_material(source)
 assert source.htue_settings.profile_revision == 1
 assert source.htue_settings.profile_sync_status == "SYNCED"
+
+# Property edits stay local and pending until an explicit save boundary.
+saved = prepared_material("M_HT_Profile_Save_Boundary")
+saved.htue_settings.base_color = (0.6, 0.5, 0.4, 1.0)
+assert saved.htue_settings.profile_sync_status == "PENDING"
+assert profile_sync._material_key(saved) in profile_sync._PENDING
+addon.flush_profiles_before_save(None)
+assert saved.htue_settings.profile_revision == 1
+assert profile_sync._material_key(saved) not in profile_sync._PENDING
 
 child = prepared_material("M_HT_Profile_Child")
 child.htue_settings.profile_id = source.htue_settings.profile_id
