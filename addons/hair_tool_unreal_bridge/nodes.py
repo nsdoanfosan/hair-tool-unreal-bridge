@@ -902,8 +902,8 @@ def refresh_deformer_availability(material):
     return True
 
 
-def refresh_system_attribute_availability(material):
-    """Refresh the live Hair Tool SystemColor gate without evaluated conversion."""
+def set_system_attribute_availability(material, available):
+    """Set the live Hair Tool SystemColor gate to a precomputed result."""
     shader = find_hair_shader(material)
     stack = None
     if shader is not None and shader.node_tree is not None:
@@ -912,17 +912,22 @@ def refresh_system_attribute_availability(material):
         stack = material.node_tree.nodes.get(schema.BRIDGE_NODE_NAME)
     if stack is None:
         return False
-
-    from . import deformer_sync
-
-    target = float(
-        deformer_sync.has_structural_source_attribute(material, "SystemColor")
-    )
+    target = float(available)
     socket = stack.inputs["System Attribute Available"]
     if _socket_value_matches(socket.default_value, target):
         return False
     socket.default_value = target
     return True
+
+
+def refresh_system_attribute_availability(material, structural_cache=None):
+    """Refresh the live Hair Tool SystemColor gate without evaluated conversion."""
+    from . import deformer_sync
+
+    available = deformer_sync.has_structural_source_attribute(
+        material, "SystemColor", cache=structural_cache
+    )
+    return set_system_attribute_availability(material, available)
 
 
 def _socket_value_matches(current, target, tolerance=1.0e-7):

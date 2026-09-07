@@ -484,15 +484,22 @@ def _geometry_input_links(node):
         yield from socket.links
 
 
-def _node_tree_output_writes_attribute(node_tree, attribute_name, visiting=None):
+def _node_tree_output_writes_attribute(
+    node_tree, attribute_name, visiting=None, cache=None
+):
     """Trace final Geometry outputs and find a reachable Store Named Attribute."""
     if node_tree is None:
         return False
+    cache = {} if cache is None else cache
+    cache_key = (int(node_tree.as_pointer()), str(attribute_name))
+    if cache_key in cache:
+        return cache[cache_key]
     visiting = set() if visiting is None else visiting
     pointer = int(node_tree.as_pointer())
     if pointer in visiting:
         return False
     visiting.add(pointer)
+    found = False
     try:
         pending = []
         for output in node_tree.nodes:
@@ -509,23 +516,26 @@ def _node_tree_output_writes_attribute(node_tree, attribute_name, visiting=None)
             visited_nodes.add(node_pointer)
 
             if _literal_named_attribute(node, attribute_name):
-                return True
+                found = True
+                break
             child_tree = getattr(node, "node_tree", None)
             if (
                 child_tree is not None
                 and not node.mute
                 and _node_tree_output_writes_attribute(
-                    child_tree, attribute_name, visiting
+                    child_tree, attribute_name, visiting, cache
                 )
             ):
-                return True
+                found = True
+                break
             pending.extend(link.from_node for link in _geometry_input_links(node))
-        return False
     finally:
         visiting.remove(pointer)
+    cache[cache_key] = found
+    return found
 
 
-def object_outputs_named_attribute(obj, attribute_name):
+def object_outputs_named_attribute(obj, attribute_name, cache=None):
     """Report a literal attribute producer in the enabled modifier stack."""
     attributes = getattr(getattr(obj, "data", None), "attributes", None)
     if attributes and attributes.get(attribute_name) is not None:
@@ -534,14 +544,63 @@ def object_outputs_named_attribute(obj, attribute_name):
         modifier.type == "NODES"
         and modifier.show_viewport
         and _node_tree_output_writes_attribute(
-            getattr(modifier, "node_group", None), attribute_name
+            getattr(modifier, "node_group", None), attribute_name, cache=cache
         )
         for modifier in getattr(obj, "modifiers", ())
         if getattr(modifier, "node_group", None) is not None
     )
 
 
-def has_structural_source_attribute(material, attribute_name):
+def structural_source_availability(materials, attribute_name, cache=None):
+    """Resolve one attribute for many materials with a single scene index.
+
+    Direct data attributes are deliberately checked before Geometry Nodes.  A
+    converted Hair Tool output commonly carries the final attribute already,
+    so there is no reason to traverse hundreds of editable source graphs for
+    the same shared material.
+    """
+    materials = list(materials)
+    cache = {} if cache is None else cache
+    available = [False] * len(materials)
+    material_indices = {
+        int(material.as_pointer()): index
+        for index, material in enumerate(materials)
+    }
+    users = [[] for _material in materials]
+
+    for obj in bpy.data.objects:
+        seen = set()
+        for slot in getattr(obj, "material_slots", ()):
+            material = slot.material
+            if material is None:
+                continue
+            original = getattr(material, "original", None) or material
+            index = material_indices.get(int(original.as_pointer()))
+            if index is None or index in seen:
+                continue
+            users[index].append(obj)
+            seen.add(index)
+
+    for index, objects in enumerate(users):
+        available[index] = any(
+            (
+                (attributes := getattr(getattr(obj, "data", None), "attributes", None))
+                and attributes.get(attribute_name) is not None
+            )
+            for obj in objects
+        )
+
+    for index, objects in enumerate(users):
+        if available[index]:
+            continue
+        available[index] = any(
+            object_outputs_named_attribute(obj, attribute_name, cache=cache)
+            for obj in objects
+        )
+    return available
+
+
+def has_structural_source_attribute(material, attribute_name, cache=None):
     """Detect direct or Geometry Nodes-produced data without evaluated conversion.
 
     Blender 5.2 can expose a Curves Geometry Nodes result in the viewport while
@@ -549,11 +608,9 @@ def has_structural_source_attribute(material, attribute_name):
     final Geometry path is therefore also authoritative evidence for Hair Tool
     Store Named Attribute deformers.
     """
-    return any(
-        _uses_material(obj, material)
-        and object_outputs_named_attribute(obj, attribute_name)
-        for obj in bpy.data.objects
-    )
+    return structural_source_availability(
+        (material,), attribute_name, cache=cache
+    )[0]
 
 
 def has_evaluated_source_attribute(material, attribute_name):

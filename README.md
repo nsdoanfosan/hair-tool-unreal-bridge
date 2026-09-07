@@ -71,15 +71,15 @@ reuses an existing registry beside the configured texture folder, then falls bac
 to the saved `.blend` folder. Hair and tail files in different folders therefore
 share the same profile when they use the same texture root. A custom registry path
 can still be assigned per material.
+Local property edits update the Blender preview immediately, while the shared JSON
+profile synchronizes only when the `.blend` is loaded or saved, or when **Sync Shared
+Hair Profile Now** is pressed. No registry polling runs during ordinary editing.
 
-Changing a Bridge control schedules an automatic publish after a short debounce.
-Other open Blender files poll the registry and apply a newer revision
-automatically; no manual push or pull is required. Concurrent edits to different
-fields are merged. If two stale files edit the same field, the second publish is
-stopped and the material panel reports a conflict instead of silently
-overwriting the newer value. **Sync Now** is retained for recovery and status
-checks. Saving a `.blend` or starting the existing Unreal handoff flushes pending
-changes first.
+Changing a Bridge control marks that local field as pending. Saving the `.blend`
+or pressing **Sync Shared Hair Profile Now** publishes those edits and receives a
+newer shared revision. Concurrent edits to different fields are merged. If two
+stale files edit the same field, the second publish is stopped and the material
+panel reports a conflict instead of silently overwriting the newer value.
 
 Legacy Hair Tool materials that expose a top-level `Albedo` input are supported
 without editing their original node group. The Bridge installs a reversible
@@ -145,7 +145,19 @@ View sidebar open **Unreal Bridge > Unreal Export Masks**, then add **Weight** o
 **Pixel Depth Offset** to the active Hair Tool subsystem. Each deformer starts with Hair
 Tool's editable Root-to-Tip influence curve and can use the same input-mask
 workflow as other Hair Tool deformers. The existing Hair Tool attribute preview
-also lists `ChaosWeight` and `HairPixelDepthOffset`.
+also lists `ChaosWeight` and `HairPixelDepthOffset`. Both custom Deformers are
+registered as soon as the Bridge loads, so they also appear in Hair Tool's
+Deformer search and under **Add Deformer > Color > Unreal Export Masks**. Before
+insertion, the Bridge reconciles Hair Tool's saved Deformer slots with the real
+connected node chain. An interrupted insertion is rolled back instead of leaving
+an unlinked group or a **Fix missing Deformers** state behind.
+
+`ChaosWeight` stays `FLOAT_COLOR` through Hair Tool's Catmull-Rom card generation.
+Storing it as `BYTE_COLOR` before curve interpolation can turn a small negative
+overshoot into a near-white stripe. Existing Bridge Weight groups upgrade in
+place, preserving their sockets, links, and influence settings. Send2UE already
+validates the signed values (negative weights fall back to zero) before writing
+the final 8-bit vertex G channel.
 
 Send to Unreal packs only the disposable evaluated export mesh as
 `RFAOS.R = HairPixelDepthOffset`, `RFAOS.G = ChaosWeight`, `RFAOS.B = AO`, and
@@ -240,6 +252,8 @@ surface/flow, opacity, and Pixel Depth Offset are placed in clearly marked
 python -m pytest -q
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_smoke.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_export_masks_smoke.py
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_profile_sync_smoke.py
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_weight_interpolation_smoke.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\layerblend_preview_smoke.py -- --repo "$PWD"
 ```
 
@@ -251,5 +265,8 @@ shared node groups, the 2 cm reference displacement, no-subdivision policy, and
 export suspension/restoration contract.
 `tests/actual_blend_readonly.py` performs the same four-material audit against
 `hair_sibuki_09.blend` without saving it. `tests/blender_profile_sync_smoke.py`
-proves automatic publish/pull, disjoint stale-edit merging, same-field conflict
+proves explicit save-time publish/pull, disjoint stale-edit merging, same-field conflict
 detection, and revision/hash updates across two in-memory child materials.
+`tests/blender_weight_interpolation_smoke.py` reproduces the legacy byte-color
+overflow with real Catmull-Rom geometry and verifies float weights, late clamping,
+unchanged geometry, and migration of linked, in-use Weight groups.

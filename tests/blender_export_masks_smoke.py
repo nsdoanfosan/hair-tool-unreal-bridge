@@ -55,6 +55,61 @@ fake_shared.node_configs = {}
 fake_shared.hair_deformer_groups = ("HD_FactorSet", "HD_Color")
 fake_shared.not_mutable_nodes = ["HD_FactorSet", "HD_Color"]
 fake_shared.remap_curve_root_to_tip_node_gr_name = "RootToTip"
+
+
+class FakeDeformers:
+    def __init__(self, count):
+        self.items = [object() for _index in range(count)]
+
+    def __len__(self):
+        return len(self.items)
+
+    def add(self):
+        self.items.append(object())
+
+    def remove(self, index):
+        self.items.pop(index)
+
+    def move(self, old_index, new_index):
+        self.items.insert(new_index, self.items.pop(old_index))
+
+
+fake_system = types.SimpleNamespace(
+    deformers=FakeDeformers(1), deformer_index=9
+)
+fake_hair_nodes = types.SimpleNamespace(
+    system_index=0, hair_systems=[fake_system]
+)
+fake_object = types.SimpleNamespace(
+    ht_props=types.SimpleNamespace(hair_nodes=fake_hair_nodes)
+)
+fake_tree = types.SimpleNamespace(nodes=[], links=[])
+fake_modifier = types.SimpleNamespace(node_group=fake_tree)
+fake_connected = [types.SimpleNamespace(), types.SimpleNamespace()]
+
+
+def fake_fix_hair_systems_ht_props(_obj):
+    while len(fake_system.deformers) < len(fake_connected):
+        fake_system.deformers.add()
+
+
+def fake_add_hair_deformer(obj, node_type):
+    assert len(obj.ht_props.hair_nodes.hair_systems[0].deformers) == 2
+    assert obj.ht_props.hair_nodes.hair_systems[0].deformer_index == 1
+    if node_type == "HTUE_Export_PixelDepthOffset":
+        fake_system.deformers.add()
+        fake_system.deformer_index = 2
+        raise AttributeError("simulated interrupted insertion")
+    return (obj, node_type)
+
+
+fake_shared.get_hair_mod_by_idx = lambda _obj, _index: fake_modifier
+fake_shared.get_deformer_nodes_list = (
+    lambda _tree, with_setup_node=False: list(fake_connected)
+)
+fake_shared.fix_hair_systems_ht_props = fake_fix_hair_systems_ht_props
+fake_shared.get_linked_hair_systems = lambda _tree: [fake_system]
+fake_shared.add_hair_deformer = fake_add_hair_deformer
 fake_hair_tool.material_operators = fake_material_operators
 fake_hair_baking.hair_geometry_nodes_shared = fake_shared
 sys.modules["hair_tool"] = fake_hair_tool
@@ -65,6 +120,22 @@ assert export_masks.install_runtime_integration()
 assert core_before == (group_signature(core_factor), group_signature(core_color))
 assert "HTUE_Export_Weight" in fake_shared.deformer_labels
 assert "HTUE_Export_PixelDepthOffset" in fake_shared.deformer_labels
+assert fake_shared.add_hair_deformer is export_masks._safe_add_hair_deformer
+assert bpy.data.node_groups.get("HTUE_Export_Weight") is not None
+assert bpy.data.node_groups.get("HTUE_Export_PixelDepthOffset") is not None
+assert fake_shared.add_hair_deformer(
+    fake_object, "HTUE_Export_Weight"
+) == (fake_object, "HTUE_Export_Weight")
+assert len(fake_system.deformers) == 2
+assert fake_system.deformer_index == 1
+try:
+    fake_shared.add_hair_deformer(fake_object, "HTUE_Export_PixelDepthOffset")
+except RuntimeError as exc:
+    assert "previous node chain was restored" in str(exc)
+else:
+    raise AssertionError("Interrupted Hair Tool insertion did not raise RuntimeError")
+assert len(fake_system.deformers) == 2
+assert fake_system.deformer_index == 1
 
 mesh = bpy.data.meshes.new("HTUE_EXPORT_MASK_SOURCE")
 mesh.from_pydata(
@@ -125,7 +196,8 @@ evaluated_mesh = bpy.data.meshes.new_from_object(evaluated)
 
 def red_values(attribute_name):
     attribute = evaluated_mesh.attributes[attribute_name]
-    assert attribute.data_type == "BYTE_COLOR"
+    expected_type = "FLOAT_COLOR" if attribute_name == "ChaosWeight" else "BYTE_COLOR"
+    assert attribute.data_type == expected_type
     assert attribute.domain == "POINT"
     return [item.color[0] for item in attribute.data]
 
