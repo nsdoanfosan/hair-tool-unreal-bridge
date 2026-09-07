@@ -65,13 +65,36 @@ the original live Hair Tool systems before it evaluates the export.
 
 ## Creating a new Prism Mesh Guide
 
+When `M_HT_Default_Material_01` exists and contains a compatible Hair shader,
+new Hair Tool Profiles reuse that material as their default, including when a
+new Profile inherits the stock `HT_Default_Material` from the last Profile.
+This does not rebuild the material, duplicate it, or overwrite an existing
+Profile's explicit material choice. Files without the configured material keep
+Hair Tool's normal default. New guided outputs have independent empty mesh
+containers, so assigning their material slots cannot change earlier outputs.
+
 Ordinary Hair Tool material and node-group imports reuse existing dependency
 groups without replacing their datablocks. This preserves custom shader nodes,
 textures, links, and the original shader used by the Unreal Bridge when a new
-Prism Profile creates `HT_Default_Material`. The compatibility hooks are removed
-when the Bridge is disabled; Hair Tool's installed files remain unchanged.
-Explicit Hair Tool **Whole Material** / shader updates still perform their
-documented reset/update, so they are not a way to create a new material safely.
+Prism Profile needs a new material. Ambiguous numeric-suffix dependencies remain
+separate instead of guessing which existing group they came from. The hooks
+recover after Hair Tool reloads its modules and are removed when the Bridge is
+disabled. Explicit **Whole Material** and shader resets that would erase a
+configured Bridge material or its source shader report an error before making
+changes. Intentionally resetting one requires restoring its original Hair Tool
+nodes first. Unmanaged materials retain the native reset behavior.
+
+Selecting a hidden guide in the Outliner selects its visible generated output
+when exactly one output directly references that guide. The guide stays hidden.
+Visible guides and multiple-output or multiple-selection cases keep their
+selection. Hair Tool and Bridge deformer actions use the same Hair Object Users
+target. Both native and Bridge deformer insertions repair stale metadata and
+restore the previous connected node chain if insertion fails.
+
+Version-specific native Hair Tool fixes are maintained under `vendor_patches/`.
+The installer verifies source hashes, backs up the installed files, and rejects
+unknown upstream versions. These patches address native subsystem ordering and
+multi-digit subsystem indices; they are separate from the removable Bridge hooks.
 
 Regression: run `tests/blender_prism_material_smoke.py` with installed Hair Tool
 in background Blender, using `--factory-startup --python-exit-code 1 --python`.
@@ -268,6 +291,9 @@ python -m pytest -q
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_export_masks_smoke.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_profile_sync_smoke.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_weight_interpolation_smoke.py
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python-exit-code 1 --python tests\blender_preferred_material_smoke.py
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python-exit-code 1 --python tests\blender_material_compat_regressions.py
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python-exit-code 1 --python tests\blender_hair_system_integration_smoke.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\layerblend_preview_smoke.py -- --repo "$PWD"
 ```
 

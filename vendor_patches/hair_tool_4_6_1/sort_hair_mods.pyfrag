@@ -1,0 +1,35 @@
+    def sort_hair_mods(self, obj):
+        """Keep modifier order, subsystem metadata, and the active system together."""
+        node_cnt = len(self.nodes)
+        if node_cnt == 0:
+            return
+        if node_cnt == 1:
+            next(iter(self.nodes.values())).order_idx = 0
+            return
+
+        sorted_nodes = self.get_sorted_nodes()
+        current_indices = [obj.modifiers.find(node.name) for node in sorted_nodes]
+        present_indices = [index for index in current_indices if index >= 0]
+        if not present_indices:
+            return
+        offset = min(present_indices)
+        hair_nodes = obj.ht_props.hair_nodes
+        original_indices = get_hair_sys_mod_name_to_idx(obj)
+        active_name = next(
+            (name for name, index in original_indices.items()
+             if index == hair_nodes.system_index),
+            None,
+        )
+
+        for index, node in enumerate(sorted_nodes):
+            old_mod_index = obj.modifiers.find(node.name)
+            if old_mod_index == -1 or old_mod_index == index + offset:
+                continue
+            # Every earlier move changes these indices. Read before this move.
+            current_system_index = get_hair_sys_mod_name_to_idx(obj)[node.name]
+            obj.modifiers.move(old_mod_index, index + offset)
+            hair_nodes.hair_systems.move(current_system_index, index)
+
+        if active_name is not None:
+            hair_nodes.system_index = get_hair_sys_mod_name_to_idx(obj)[active_name]
+        update_indent_cache(obj, self)
