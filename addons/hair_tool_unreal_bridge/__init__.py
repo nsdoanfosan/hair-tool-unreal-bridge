@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Unreal Material Bridge",
     "author": "PARK / OpenAI Codex",
-    "version": (0, 9, 2),
+    "version": (0, 9, 3),
     "blender": (5, 1, 0),
     "location": "3D View > Unreal Bridge; Material Properties > Unreal Material Bridge",
     "description": "Synchronize Hair Tool materials and preview M_LayerBlend height from Unreal",
@@ -12,7 +12,7 @@ import bpy
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, PointerProperty
 
-from . import export_masks, layerblend_preview, operators, profile_sync, properties, ui
+from . import export_masks, layerblend_preview, material_compat, operators, profile_sync, properties, ui
 
 
 CLASSES = (
@@ -30,6 +30,7 @@ def initialize_export_ao_after_register():
     """Run after Blender releases the restricted registration data context."""
     from . import deformer_sync
 
+    material_compat.install_runtime_integration()
     deformer_sync.initialize_existing_export_ao_settings()
     profile_sync.on_load()
     export_masks.install_runtime_integration()
@@ -40,6 +41,7 @@ def migrate_bridge_ui_on_load(_unused):
     """Upgrade saved bridge node interfaces without touching Hair Tool itself."""
     from . import deformer_sync, nodes
 
+    material_compat.install_runtime_integration()
     deformer_sync.initialize_existing_export_ao_settings()
 
     for material in bpy.data.materials:
@@ -95,6 +97,7 @@ def register():
 
 
 def unregister():
+    material_compat.remove_runtime_integration()
     export_masks.remove_runtime_integration()
     layerblend_preview.unregister_auto_sync()
     profile_sync.unregister_auto_sync()

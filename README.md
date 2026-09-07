@@ -63,6 +63,20 @@ disabling the AO layer. Hair Tool's safe Map Range behavior is also preserved:
 Starting Send to Unreal automatically removes the display cache and restores
 the original live Hair Tool systems before it evaluates the export.
 
+## Creating a new Prism Mesh Guide
+
+Ordinary Hair Tool material and node-group imports reuse existing dependency
+groups without replacing their datablocks. This preserves custom shader nodes,
+textures, links, and the original shader used by the Unreal Bridge when a new
+Prism Profile creates `HT_Default_Material`. The compatibility hooks are removed
+when the Bridge is disabled; Hair Tool's installed files remain unchanged.
+Explicit Hair Tool **Whole Material** / shader updates still perform their
+documented reset/update, so they are not a way to create a new material safely.
+
+Regression: run `tests/blender_prism_material_smoke.py` with installed Hair Tool
+in background Blender, using `--factory-startup --python-exit-code 1 --python`.
+The test enables add-ons with `default_set=False` and never saves preferences.
+
 ## Shared Hair profiles
 
 Configured Hair Tool materials use one shared registry named
