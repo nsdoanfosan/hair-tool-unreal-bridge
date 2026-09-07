@@ -2,6 +2,7 @@
 
 import addon_utils
 import bpy
+import bmesh
 import json
 from pathlib import Path
 import sys
@@ -94,6 +95,12 @@ assert_preserved()
 bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=0.15, depth=1)
 prism = bpy.context.object
 prism.name = "New_Prism_Guide"
+# Prism requires an open tip and a capped root bounded by sharp edges.
+bm = bmesh.new()
+bm.from_mesh(prism.data)
+bmesh.ops.delete(bm, geom=[f for f in bm.faces if all(v.co.z > 0 for v in f.verts)], context="FACES_ONLY")
+bm.to_mesh(prism.data)
+bm.free()
 sharp = prism.data.attributes.new("sharp_edge", "BOOLEAN", "EDGE")
 for edge in prism.data.edges:
     sharp.data[edge.index].value = all(prism.data.vertices[i].co.z < 0 for i in edge.vertices)
@@ -107,6 +114,21 @@ profile = shared.get_profile_mod(output)
 assert profile is not None
 assert profile.properties.inputs[shared.prof_mat_input_name]["value"] == new_material
 assert_preserved()
+# Curves Object.dimensions can stay zero for generated Geometry Nodes output.
+# Read the actual mesh component through a disposable native Object Info node.
+probe_mesh = bpy.data.meshes.new("PrismGeometryProbe")
+probe_object = bpy.data.objects.new("PrismGeometryProbe", probe_mesh)
+bpy.context.scene.collection.objects.link(probe_object)
+probe_tree = bpy.data.node_groups.new("PrismGeometryProbe", "GeometryNodeTree")
+probe_tree.interface.new_socket(name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+probe_info = probe_tree.nodes.new("GeometryNodeObjectInfo")
+probe_info.inputs["Object"].default_value = output
+probe_output = probe_tree.nodes.new("NodeGroupOutput")
+probe_tree.links.new(probe_info.outputs["Geometry"], probe_output.inputs["Geometry"])
+probe_object.modifiers.new("Probe", "NODES").node_group = probe_tree
+bpy.context.view_layer.update()
+generated_vertices = len(probe_object.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.vertices)
+assert generated_vertices > 0, "Prism must produce actual geometry"
 # A later ordinary Deformer import must also preserve existing Geometry Nodes.
 geometry_state = {g.name: graph_state(g) for g in bpy.data.node_groups
                   if g.bl_idname == "GeometryNodeTree"}
@@ -122,6 +144,7 @@ for name, state in geometry_state.items():
 assert_preserved()
 print("PRISM_MATERIAL_PRESERVATION_OK", json.dumps({"preserved_groups": len(group_state),
       "preserved_geometry_groups": len(geometry_state),
+      "generated_vertices": generated_vertices,
       "material": material.name, "new_output": output.name, "new_material": new_material.name}))
 
 # Runtime installation is idempotent and restores every original imported alias.
