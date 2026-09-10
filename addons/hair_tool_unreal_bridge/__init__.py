@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Unreal Material Bridge",
     "author": "PARK / OpenAI Codex",
-    "version": (0, 9, 4),
+    "version": (0, 9, 5),
     "blender": (5, 1, 0),
     "location": "3D View > Unreal Bridge; Material Properties > Unreal Material Bridge",
     "description": "Synchronize Hair Tool materials and preview M_LayerBlend height from Unreal",
@@ -12,7 +12,7 @@ import bpy
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, PointerProperty
 
-from . import export_masks, hair_system_compat, layerblend_preview, material_compat, operators, profile_sync, properties, ui
+from . import export_masks, hair_system_compat, layerblend_preview, material_compat, operators, profile_sync, properties, ui, uv_compat
 
 
 CLASSES = (
@@ -23,6 +23,7 @@ CLASSES = (
     + ui.CLASSES
     + export_masks.PANEL_CLASSES
     + layerblend_preview.CLASSES
+    + uv_compat.CLASSES
 )
 
 
