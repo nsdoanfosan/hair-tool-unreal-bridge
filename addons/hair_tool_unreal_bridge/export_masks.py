@@ -288,13 +288,7 @@ def _restore_insertion_state(node_tree, snapshot):
 
 
 def _safe_add_hair_deformer(obj, new_node_type):
-    """Repair stale Hair Tool metadata before adding a Bridge Deformer."""
-    export_group_names = {
-        definition["group_name"] for definition in MASK_DEFINITIONS.values()
-    }
-    if new_node_type not in export_group_names:
-        return _original_add_hair_deformer(obj, new_node_type)
-
+    """Repair metadata and roll back interrupted native or Bridge insertions."""
     shared, _material_operators = _hair_tool_modules()
     if shared is None or _original_add_hair_deformer is None:
         raise RuntimeError("Hair Tool Deformer integration is unavailable")
@@ -320,29 +314,28 @@ def _install_safe_add_hair_deformer(shared):
     if current is not _safe_add_hair_deformer:
         _original_add_hair_deformer = current
 
-    modules = [shared]
-    try:
-        from hair_tool.hair_baking import hair_geometry_nodes
-    except Exception:
-        hair_geometry_nodes = None
-    if hair_geometry_nodes is not None:
-        modules.append(hair_geometry_nodes)
-
+    # Hair Tool imports this function into its profile, UV, conversion and
+    # update modules. Patching only the shared module leaves those operators
+    # on the unsafe implementation. Match by identity, never by name alone.
+    modules = {
+        module
+        for name, module in tuple(sys.modules.items())
+        if module is not None and (name == "hair_tool" or name.startswith("hair_tool."))
+    }
+    modules.add(shared)
     for module in modules:
-        previous = getattr(module, "add_hair_deformer", None)
-        if previous is _safe_add_hair_deformer:
-            continue
-        if callable(previous):
-            _patched_add_targets[module] = previous
-            module.add_hair_deformer = _safe_add_hair_deformer
+        for attribute, previous in tuple(vars(module).items()):
+            if previous is _original_add_hair_deformer:
+                _patched_add_targets[(module, attribute)] = previous
+                setattr(module, attribute, _safe_add_hair_deformer)
 
 
 def _remove_safe_add_hair_deformer():
     global _original_add_hair_deformer
 
-    for module, original in tuple(_patched_add_targets.items()):
-        if getattr(module, "add_hair_deformer", None) is _safe_add_hair_deformer:
-            module.add_hair_deformer = original
+    for (module, attribute), original in tuple(_patched_add_targets.items()):
+        if getattr(module, attribute, None) is _safe_add_hair_deformer:
+            setattr(module, attribute, original)
     _patched_add_targets.clear()
     _original_add_hair_deformer = None
 
@@ -432,10 +425,11 @@ def remove_runtime_integration():
 
 
 def _active_hair_tool_state(context):
-    obj = context.object
+    shared, _material_operators = _hair_tool_modules()
+    resolver = getattr(shared, "get_current_hair_object", None)
+    obj = resolver(context) if callable(resolver) else context.object
     if obj is None:
         return None, None, None
-    shared, _material_operators = _hair_tool_modules()
     if shared is None or not hasattr(obj, "ht_props"):
         return obj, None, None
     hair_nodes = getattr(obj.ht_props, "hair_nodes", None)
