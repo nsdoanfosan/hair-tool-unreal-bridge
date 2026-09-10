@@ -7,6 +7,10 @@ Tool's own add-on files or node groups. The Python package and Git repository
 retain the legacy `hair_tool_unreal_bridge` name so existing `.blend` files,
 scripts, and the Blender junction continue to work.
 
+**Hair Compatibility** in the Unreal Bridge sidebar checks legacy/matrix UV
+format mismatches and repairs selected Profiles using isolated UV copies.
+See [checks, repair limits and validation](docs/hair-uv-compatibility.md).
+
 ## What is synchronized
 
 The add-on creates a reversible, per-material compatibility copy named
