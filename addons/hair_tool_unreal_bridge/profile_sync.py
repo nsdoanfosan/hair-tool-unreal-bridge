@@ -345,6 +345,8 @@ def _data_system_source_state(data):
 
 
 def _object_system_source_state(obj):
+    from . import deformer_sync
+
     obj = getattr(obj, "original", None) or obj
     data = getattr(obj, "data", None)
     modifiers = tuple(
@@ -364,6 +366,7 @@ def _object_system_source_state(obj):
             _rna_key(slot.material) if slot.material is not None else None
             for slot in getattr(obj, "material_slots", ())
         ),
+        tuple(_rna_key(material) for material in deformer_sync.output_materials(obj)),
     )
 
 
