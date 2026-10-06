@@ -283,6 +283,37 @@ assert profile_sync.mark_deformer_sources_dirty(
 structural_mesh.materials[0] = structural_material
 structural_mesh.attributes.remove(system_attribute)
 
+# A Hair Tool Profile can override source slots. Its material owns SystemColor,
+# and changing the modifier input must invalidate the live availability cache.
+system_attribute = structural_mesh.attributes.new("SystemColor", "BYTE_COLOR", "POINT")
+profile_group = bpy.data.node_groups.new("Hair_System_Profile_HTUE_SMOKE", "GeometryNodeTree")
+profile_group.interface.new_socket(name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+profile_group.interface.new_socket(name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+profile_socket = profile_group.interface.new_socket(name="Strands Material", in_out="INPUT", socket_type="NodeSocketMaterial")
+profile_input = profile_group.nodes.new("NodeGroupInput")
+profile_output = profile_group.nodes.new("NodeGroupOutput")
+set_material = profile_group.nodes.new("GeometryNodeSetMaterial")
+profile_group.links.new(profile_input.outputs["Geometry"], set_material.inputs["Geometry"])
+profile_group.links.new(profile_input.outputs["Strands Material"], set_material.inputs["Material"])
+profile_group.links.new(set_material.outputs["Geometry"], profile_output.inputs["Geometry"])
+profile_modifier = structural_object.modifiers.new("Profile", "NODES")
+profile_modifier.node_group = profile_group
+deformer_sync._modifier_input_set(profile_modifier, profile_socket.identifier, replacement_material)
+assert deformer_sync.structural_source_availability(
+    (structural_material, replacement_material), "SystemColor", cache={}
+) == [False, True], "Profile material must own its output attributes"
+assert deformer_sync._uses_material(structural_object, replacement_material)
+assert not deformer_sync._uses_material(structural_object, structural_material)
+profile_sync._remember_system_source_state(structural_object)
+profile_sync._DEFORMER_SOURCES_DIRTY = False
+deformer_sync._modifier_input_set(profile_modifier, profile_socket.identifier, structural_material)
+assert profile_sync.mark_deformer_sources_dirty(SimpleNamespace(updates=[object_update]))
+assert deformer_sync.structural_source_availability(
+    (structural_material, replacement_material), "SystemColor", cache={}
+) == [True, False]
+structural_object.modifiers.remove(profile_modifier)
+structural_mesh.attributes.remove(system_attribute)
+
 stack = nodes.setup_material(material)
 assert stack is not None
 assert shader.node_tree != hair_group

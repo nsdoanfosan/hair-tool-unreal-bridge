@@ -448,10 +448,38 @@ def _same_material(candidate, material):
     )
 
 
+def output_materials(obj):
+    """Use Hair Tool's Profile assignment rather than stale source slots."""
+    assigned = []
+    for modifier in getattr(obj, "modifiers", ()):
+        group = getattr(modifier, "node_group", None)
+        if (
+            modifier.type != "NODES"
+            or not modifier.show_viewport
+            or group is None
+            or not group.name.startswith("Hair_System_Profile")
+        ):
+            continue
+        for socket in group.interface.items_tree:
+            if (
+                getattr(socket, "item_type", None) == "SOCKET"
+                and getattr(socket, "in_out", None) == "INPUT"
+                and getattr(socket, "socket_type", None) == "NodeSocketMaterial"
+                and socket.name in {"Strands Material", "Material"}
+            ):
+                material = _modifier_input_get(modifier, socket.identifier)
+                if material is not None:
+                    assigned.append(material)
+    if assigned:
+        return assigned
+    return [slot.material for slot in getattr(obj, "material_slots", ())
+            if slot.material is not None]
+
+
 def _uses_material(obj, material):
     return any(
-        _same_material(slot.material, material)
-        for slot in getattr(obj, "material_slots", ())
+        _same_material(assigned, material)
+        for assigned in output_materials(obj)
     )
 
 
@@ -570,10 +598,7 @@ def structural_source_availability(materials, attribute_name, cache=None):
 
     for obj in bpy.data.objects:
         seen = set()
-        for slot in getattr(obj, "material_slots", ()):
-            material = slot.material
-            if material is None:
-                continue
+        for material in output_materials(obj):
             original = getattr(material, "original", None) or material
             index = material_indices.get(int(original.as_pointer()))
             if index is None or index in seen:
