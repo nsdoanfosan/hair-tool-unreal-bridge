@@ -1,5 +1,18 @@
 # Unreal Material Bridge
 
+**Unreal Bridge > Hair Tool Material Sync > Load Shared Hair Materials (3)**
+appends the configured default hair and Short 01/02 materials from the saved
+`hair_sibuki_09.blend` source. The dialog accepts another source path. Existing
+materials receive the latest values of their matching shared profile; their
+datablocks and object assignments are retained. Short 01 receives Short 01,
+independently of the default main hair profile. Missing materials keep the saved
+shader, textures and Unreal MI contracts. Loading only receives values and never
+publishes the receiving file's previous settings to the registry. Choose the desired material in
+Hair Tool's native Profile material picker. This reads saved Blender data;
+it does not fetch live Unreal parameter edits. `Sync Shared Profile Now` updates
+an existing configured material; `Set Up Standard Hair Materials` also requires
+the materials to be present and does not import them.
+
 Blender–Unreal material integration add-on. It currently keeps Hair Tool card
 controls synchronized and provides a lightweight `M_LayerBlend` Height preview
 for clearance and silhouette checks in Blender 5.1. It does not modify Hair

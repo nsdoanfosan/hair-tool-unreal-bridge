@@ -1,5 +1,5 @@
 import bpy
-from bpy.props import EnumProperty
+from bpy.props import EnumProperty, StringProperty
 
 from . import contract, deformer_sync, nodes, profile_sync, schema
 
@@ -381,6 +381,45 @@ class HTUE_OT_SetupFourMaterials(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class HTUE_OT_LoadSharedMaterials(bpy.types.Operator):
+    bl_idname = "htue.load_shared_materials"
+    bl_label = "Load Shared Hair Materials (3)"
+    bl_description = (
+        "Append the saved default hair and Short 01/02 shaders, textures and "
+        "Unreal MI bindings from the shared Blender source; refresh existing "
+        "shared values without replacing material assignments"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    filepath: StringProperty(
+        name="Shared Hair Source", subtype="FILE_PATH",
+        default=str(schema.DEFAULT_TEXTURE_ROOT.parent / "hair_sibuki_09.blend"),
+    )
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_props_dialog(self, width=540)
+
+    def draw(self, _context):
+        self.layout.prop(self, "filepath")
+        self.layout.label(text="Default hair + Short 01 + Short 02", icon="MATERIAL")
+        self.layout.label(text="Receive shared settings; keep existing material assignments")
+
+    def execute(self, _context):
+        from . import material_library
+        try:
+            report = material_library.load_shared_materials(self.filepath)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report(
+            {"INFO"},
+            f"Shared hair materials ready: {len(report['loaded'])} loaded, "
+            f"{len(report['refreshed'])} refreshed, {len(report['up_to_date'])} current; "
+            "choose one in Hair Tool Profile",
+        )
+        return {"FINISHED"}
+
+
 class HTUE_OT_SyncSharedProfile(bpy.types.Operator):
     bl_idname = "htue.sync_shared_profile"
     bl_label = "Sync Shared Hair Profile Now"
@@ -510,6 +549,7 @@ CLASSES = (
     HTUE_OT_RemoveSelectedFromExport,
     HTUE_OT_SetupActiveMaterial,
     HTUE_OT_SetupFourMaterials,
+    HTUE_OT_LoadSharedMaterials,
     HTUE_OT_SyncSharedProfile,
     HTUE_OT_RestoreActiveMaterial,
     HTUE_OT_RefreshContract,
