@@ -296,6 +296,7 @@ class HTUE_PT_Sidebar(bpy.types.Panel):
         layout = self.layout
         material = _active_material(context)
         root = deformer_sync._find_export_root(context.object)
+        layout.operator("htue.load_shared_materials", icon="APPEND_BLEND")
         if root is not None:
             layout.label(text=root.name, icon="OUTLINER_OB_EMPTY")
         if material is None:
