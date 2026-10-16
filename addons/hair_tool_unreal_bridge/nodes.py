@@ -26,6 +26,7 @@ MANAGED_TOP_LEVEL_NODES = (
     "HTUE IRD Map",
     "HTUE ORM Map",
     "HTUE UV",
+    "HTUE System Availability",
 )
 
 
@@ -645,6 +646,7 @@ def _install_stack_in_clone(clone, stack_group):
     for name, socket_type in (
         ("HTUE IRD Map", "NodeSocketColor"),
         ("HTUE ORM Map", "NodeSocketColor"),
+        ("HTUE System Attribute Available", "NodeSocketFloat"),
     ):
         _ensure_clone_input(clone, name, socket_type)
 
@@ -669,6 +671,7 @@ def _install_stack_in_clone(clone, stack_group):
     for source_name, target_name in (
         ("HTUE IRD Map", "IRD Map"),
         ("HTUE ORM Map", "ORM Map"),
+        ("HTUE System Attribute Available", "System Attribute Available"),
     ):
         _link_unique(clone, _group_input_output(clone, source_name), stack.inputs[target_name])
 
@@ -759,6 +762,23 @@ def _ensure_hair_attribute_links(material, shader):
     return nodes
 
 
+def _ensure_system_availability_link(material, target):
+    from . import deformer_sync
+
+    node = _top_node(material.node_tree, "ShaderNodeAttribute", "HTUE System Availability")
+    node.attribute_type = "OBJECT"
+    node.attribute_name = deformer_sync.SYSTEM_SOURCE_PROPERTY
+    socket_name = ("HTUE System Attribute Available"
+                   if "HTUE System Attribute Available" in target.inputs
+                   else "System Attribute Available")
+    from . import system_presence
+    system_presence.link_gate(
+        material, node.outputs["Fac"], target.inputs[socket_name],
+        _top_node, _link_unique,
+    )
+    deformer_sync.sync_system_source_flags((material,))
+
+
 def _remove_obsolete_top_level_nodes(tree):
     groups = []
     for name in MANAGED_TOP_LEVEL_NODES:
@@ -773,6 +793,39 @@ def _remove_obsolete_top_level_nodes(tree):
             bpy.data.node_groups.remove(group)
 
 
+def _shader_refresh_template(material, shader):
+    """A material-only append can contain the clone without its unused original."""
+    current = shader.node_tree
+    original_name = str(material.get(schema.ORIGINAL_SHADER_GROUP_PROPERTY) or "")
+    original = bpy.data.node_groups.get(original_name) if original_name else None
+    if original is None or original.name.startswith(schema.SHADER_CLONE_PREFIX):
+        original = current
+
+    # Validate before removing any hooks or allocating replacement groups. A
+    # saved clone still contains the complete Hair Tool shader; replacing its
+    # Bridge-owned stack does not require inventing a new legacy original.
+    for name in (
+        "Random Id [Map]", "Factor [Map]", "Depth [Map]",
+        "Vert Color AO [Map]", "Debug Color",
+    ):
+        _group_input_output(original, name)
+    if not any(node.bl_idname == "NodeReroute" and node.label == "Color"
+               for node in original.nodes):
+        raise RuntimeError("HairShaderMain final Color reroute was not found")
+    return original
+
+
+def _remove_unused_color_stacks(stack_name, keep):
+    """Reclaim only this material's unused groups, including failed refreshes."""
+    for group in list(bpy.data.node_groups):
+        suffix = group.name.removeprefix(stack_name + ".")
+        owned = group.name == stack_name or (
+            group.name.startswith(stack_name + ".") and suffix.isdecimal()
+        )
+        if owned and group != keep and group.library is None and group.users == 0:
+            bpy.data.node_groups.remove(group)
+
+
 def setup_material(material):
     shader = find_hair_shader(material)
     legacy_top_level = False
@@ -781,6 +834,7 @@ def setup_material(material):
         legacy_top_level = shader is not None
     if shader is None:
         raise RuntimeError(f"{material.name}: HairShaderMain-compatible node was not found")
+    template = None if legacy_top_level else _shader_refresh_template(material, shader)
     settings = material.htue_settings
     if not settings.initialized:
         initialise_settings(material, shader)
@@ -802,41 +856,40 @@ def setup_material(material):
     old_stack = bpy.data.node_groups.get(stack_name)
     if old_stack is not None and old_stack.users == 0:
         bpy.data.node_groups.remove(old_stack)
+        old_stack = None
     stack_group = bpy.data.node_groups.new(stack_name, "ShaderNodeTree")
     _build_group(stack_group, settings)
 
     if legacy_top_level:
         stack = _install_legacy_top_level_stack(material, shader, stack_group)
     else:
-        original_name = str(material.get(schema.ORIGINAL_SHADER_GROUP_PROPERTY) or "")
-        original_group = bpy.data.node_groups.get(original_name) if original_name else None
-        if original_group is None or original_group.name.startswith(schema.SHADER_CLONE_PREFIX):
-            if not shader.node_tree.name.startswith(schema.SHADER_CLONE_PREFIX):
-                original_group = shader.node_tree
-                material[schema.ORIGINAL_SHADER_GROUP_PROPERTY] = original_group.name
-            else:
-                raise RuntimeError(
-                    f"{material.name}: original HairShaderMain group is unavailable"
-                )
-
         old_clone = (
             shader.node_tree
             if shader.node_tree.name.startswith(schema.SHADER_CLONE_PREFIX)
             else None
         )
-        shader.node_tree = original_group
-        if old_clone is not None and old_clone.users == 0:
-            bpy.data.node_groups.remove(old_clone)
-        clone = original_group.copy()
-        clone.name = f"{schema.SHADER_CLONE_PREFIX}::{material.name}"
+        if not template.name.startswith(schema.SHADER_CLONE_PREFIX):
+            material[schema.ORIGINAL_SHADER_GROUP_PROPERTY] = template.name
+            if template.library is None:
+                template.use_fake_user = True
+        # Copy before detaching: for standalone saved materials the template
+        # can be the very clone we are replacing. Shared users stay untouched.
+        clone = template.copy()
         stack = _install_stack_in_clone(clone, stack_group)
         shader.node_tree = clone
         _restore_shader_inputs(tree, shader, input_state)
+        if old_clone is not None and old_clone.users == 0:
+            bpy.data.node_groups.remove(old_clone)
+        _remove_unused_color_stacks(stack_name, stack_group)
+        if bpy.data.node_groups.get(stack_name) in {None, stack_group}:
+            stack_group.name = stack_name
+        clone.name = f"{schema.SHADER_CLONE_PREFIX}::{material.name}"
 
     stack.inputs["AO Vertex Available"].default_value = float(ao_vertex_available)
     stack.inputs["System Attribute Available"].default_value = float(
         system_attribute_available
     )
+    _ensure_system_availability_link(material, stack if legacy_top_level else shader)
 
     uv = _top_node(tree, "ShaderNodeTexCoord", "HTUE UV")
     ird = _top_node(tree, "ShaderNodeTexImage", "HTUE IRD Map")
@@ -889,6 +942,8 @@ def refresh_deformer_availability(material):
 
     from . import deformer_sync
 
+    deformer_sync.sync_system_source_flags((material,))
+
     for socket_name, attribute_name in (
         ("AO Vertex Available", "AO"),
         ("System Attribute Available", "SystemColor"),
@@ -923,6 +978,8 @@ def set_system_attribute_availability(material, available):
 def refresh_system_attribute_availability(material, structural_cache=None):
     """Refresh the live Hair Tool SystemColor gate without evaluated conversion."""
     from . import deformer_sync
+
+    deformer_sync.sync_system_source_flags((material,), cache=structural_cache)
 
     available = deformer_sync.has_structural_source_attribute(
         material, "SystemColor", cache=structural_cache

@@ -327,3 +327,11 @@ detection, and revision/hash updates across two in-memory child materials.
 `tests/blender_weight_interpolation_smoke.py` reproduces the legacy byte-color
 overflow with real Catmull-Rom geometry and verifies float weights, late clamping,
 unchanged geometry, and migration of linked, in-use Weight groups.
+
+### Component color availability
+
+SystemColor availability is carried per geometry component, so an uncolored source mesh cannot become authored black when joined with colored strands. An uncolored source mesh inherits nearby authored strand color without overwriting an existing mesh color. Alpha is never used as availability.
+
+Native Hair Tool Factor storage and Root/Center/Tip interpolation remain unchanged. Center is a curve control value, not a required midpoint value. Debug and export consume the resulting attributes. Refresh also supports saved material clones when their unused original shader was not appended.
+
+Native Blender regressions: `tests/blender_component_presence.py` and `tests/blender_refresh_without_original.py`. Run with `--factory-startup --background --python-exit-code 1 --python`; they never save user preferences.
