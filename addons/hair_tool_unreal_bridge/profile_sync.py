@@ -502,7 +502,9 @@ def _refresh_deformer_sources_if_dirty():
         "SystemColor",
         cache=_DEFORMER_NODE_TREE_CACHE,
     )
-    changed = False
+    changed = deformer_sync.sync_system_source_flags(
+        materials, cache=_DEFORMER_NODE_TREE_CACHE
+    )
     for material, available in zip(materials, availability):
         try:
             changed = nodes.set_system_attribute_availability(

@@ -9,6 +9,7 @@ COMBINED_PREVIEW_SOURCES_PROPERTY = "_htue_combined_ao_sources"
 PREVIEW_COLLECTION_NAME = "HTUE Combined AO Preview"
 DEFAULT_EXPORT_COLLECTION_NAME = "Export"
 EXPORT_TARGET_PROPERTY = "_htue_export_target"
+SYSTEM_SOURCE_PROPERTY = "_htue_system_color_available"
 EXPORT_LINK_ADDED_PROPERTY = "_htue_export_link_added"
 EXPORT_HIERARCHY_MOVED_PROPERTY = "_htue_export_hierarchy_moved"
 EXPORT_ORIGINAL_PARENT_PROPERTY = "_htue_export_original_parent"
@@ -636,6 +637,33 @@ def has_structural_source_attribute(material, attribute_name, cache=None):
     return structural_source_availability(
         (material,), attribute_name, cache=cache
     )[0]
+
+
+def sync_system_source_flags(materials, cache=None):
+    """Gate SystemColor per object, including users of one shared material.
+
+    A material-wide availability bit enables black missing attributes on every
+    other user when just one hidden or unrelated object has SystemColor.
+    Keep this separate from the color's alpha, which is not an influence mask.
+    """
+    from . import system_presence
+
+    pointers = {int(material.as_pointer()) for material in materials}
+    cache = {} if cache is None else cache
+    changed = False
+    for obj in bpy.data.objects:
+        if obj.library is not None or not any(
+            int((getattr(material, "original", None) or material).as_pointer())
+            in pointers for material in output_materials(obj)
+        ):
+            continue
+        changed = system_presence.ensure_object(obj) or changed
+        value = float(object_outputs_named_attribute(obj, "SystemColor", cache=cache))
+        if obj.get(SYSTEM_SOURCE_PROPERTY) != value:
+            obj[SYSTEM_SOURCE_PROPERTY] = value
+            obj.update_tag(refresh={"OBJECT"})
+            changed = True
+    return changed
 
 
 def has_evaluated_source_attribute(material, attribute_name):
