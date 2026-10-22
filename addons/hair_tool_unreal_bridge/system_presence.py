@@ -1,9 +1,9 @@
-"""Keep SystemColor existence per geometry component through Hair Tool joins.
+"""Keep SystemColor existence per rendered geometry component.
 
-A named attribute on curves becomes zero-filled on an uncolored source mesh
-when Profile joins them. Object-wide availability cannot distinguish that
-missing value from authored black. Stamp existence before that join instead.
-The existing Send2UE v3 missing-color sentinel carries the same information.
+Native Profile input meshes are simulation/sampling surfaces, not render
+layers. Generic mixed geometry can still contain genuinely uncolored parts;
+stamp presence per component rather than treating missing color as authored
+black. The existing Send2UE v3 missing-color sentinel carries that information.
 """
 import bpy
 
@@ -12,13 +12,70 @@ ENCODED_PROPERTY = '_htue_system_presence_encoded'
 PREFIX = 'HTUE System Presence '
 
 
+def is_native_render_profile(group):
+    """Recognize Hair Tool's card generator, not arbitrary mixed geometry."""
+    capture = group.nodes.get('Capture Curve Attributes')
+    profile = group.nodes.get('Flat_Profile_UV') or group.nodes.get('Circle_Profile_UV')
+    return bool(capture and capture.type == 'GROUP'
+                and capture.inputs.get('Mesh') is not None
+                and profile and profile.type == 'GROUP'
+                and group.nodes.get('Separate Components')
+                and group.nodes.get('Set Material')
+                and group.nodes.get('Join Geometry'))
+
+
+def ensure_render_cards_only(group):
+    """Keep simulation/sampling input out of the final card render join.
+
+    The input Mesh must still feed Capture Curve Attributes. It is a guide
+    surface, not an additional rendered hair layer. Never sample card color
+    back onto it or reconnect it to the output while refreshing materials.
+    """
+    if not is_native_render_profile(group):
+        return False
+    join = group.nodes['Join Geometry']
+    source_names = {'Separate Components', PREFIX + 'Mesh',
+                    'HTUE Source Mesh SystemColor'}
+    links = [link for link in group.links
+             if link.to_node == join and link.from_node.name in source_names
+             and (link.from_node.name != 'Separate Components'
+                  or link.from_socket.name == 'Mesh')]
+    for link in links:
+        group.links.remove(link)
+    if links:
+        group.update_tag()
+    return bool(links)
+
+
+def _export_render_group(obj, modifier, group):
+    """Isolate an export Profile if a guide/backup shares its node tree."""
+    from . import deformer_sync
+    collection = deformer_sync.export_collection()
+    if collection is None or obj.hide_render or obj.name not in collection.all_objects:
+        return group, False, False
+    outsiders = any(
+        other.name not in collection.all_objects or other.hide_render
+        for other in bpy.data.objects
+        for mod in other.modifiers
+        if mod.type == 'NODES' and mod.node_group == group
+    )
+    if outsiders:
+        group = group.copy()
+        modifier.node_group = group
+    return group, True, outsiders
+
+
 def ensure_surface_color(group):
-    """Inherit the authored strand color on an otherwise uncolored guide mesh.
+    """Preserve legacy color inheritance on non-native mixed geometry only.
 
     Keep the mesh sent to Capture Curve Attributes unchanged: sampling the
     generated cards back onto that input would introduce a dependency cycle.
     Only the independent mesh branch entering the final Join is augmented.
     """
+    # Real Hair Tool Profile Mesh is a simulation/sampling input. The generic
+    # mixed-geometry fallback below must never turn it into a visible layer.
+    if is_native_render_profile(group):
+        return False
     name = 'HTUE Source Mesh SystemColor'
     if group.nodes.get(name):
         return False
@@ -89,7 +146,7 @@ def ensure_object(obj):
                    and obj.data.attributes.get(ATTRIBUTE) is not None)
     changed = False
     for modifier in obj.modifiers:
-        if modifier.type != 'NODES' or not modifier.show_viewport:
+        if modifier.type != 'NODES' or not (modifier.show_viewport or modifier.show_render):
             continue
         group = modifier.node_group
         if group is None or group.library or not group.name.startswith('Hair_System_Profile'):
@@ -98,6 +155,13 @@ def ensure_object(obj):
         capture = group.nodes.get('Capture Curve Attributes')
         if separate is None or capture is None:
             continue
+        native_profile = is_native_render_profile(group)
+        if native_profile:
+            group, render_output, isolated = _export_render_group(obj, modifier, group)
+            changed = isolated or changed
+            if render_output:
+                changed = ensure_render_cards_only(group) or changed
+            separate = group.nodes.get('Separate Components')
         for component in ('Mesh', 'Curve'):
             source = separate.outputs.get(component)
             if source is None:
@@ -128,7 +192,7 @@ def ensure_object(obj):
                     group.links.new(store.outputs['Geometry'], target)
                 changed = True
             encoded = True
-        if obj.type == 'MESH':
+        if obj.type == 'MESH' and not native_profile:
             changed = ensure_surface_color(group) or changed
     value = float(encoded)
     if obj.get(ENCODED_PROPERTY) != value:

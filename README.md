@@ -335,3 +335,16 @@ SystemColor availability is carried per geometry component, so an uncolored sour
 Native Hair Tool Factor storage and Root/Center/Tip interpolation remain unchanged. Center is a curve control value, not a required midpoint value. Debug and export consume the resulting attributes. Refresh also supports saved material clones when their unused original shader was not appended.
 
 Native Blender regressions: `tests/blender_component_presence.py` and `tests/blender_refresh_without_original.py`. Run with `--factory-startup --background --python-exit-code 1 --python`; they never save user preferences.
+
+### Simulation meshes are inputs, not rendered hair layers
+
+Native Hair Tool Flat/Circle Profile objects in the configured Send2UE Export
+collection output generated cards only. `system_presence.ensure_object` preserves
+the simulation mesh connection to `Capture Curve Attributes`, but removes its
+independent final `Join Geometry` branch. Source-color inheritance must not make a
+simulation surface visible. Shared non-export guide/backup groups are isolated,
+and render-only enabled Profile modifiers are covered as well.
+
+`tests/blender_simulation_mesh_exclusion.py` verifies actual output geometry,
+color and UV preservation, the sampling input, shared backups, repeated refresh,
+legacy augmented graphs, and a saved-file reload without sending anything to Unreal.
