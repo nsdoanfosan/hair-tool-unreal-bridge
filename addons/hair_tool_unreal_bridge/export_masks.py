@@ -9,7 +9,7 @@ from bpy.props import EnumProperty
 import sys
 
 
-GROUP_VERSION = 2
+GROUP_VERSION = 3
 GROUP_MARKER = "_htue_export_mask_group"
 GROUP_VERSION_PROPERTY = "_htue_export_mask_version"
 
@@ -70,6 +70,59 @@ def _clear_node_group(node_group):
     node_group.interface.clear()
 
 
+def _ensure_input_mask(node_group):
+    """Append Hair Tool's ordinary mask without replacing authored interfaces."""
+    mask_input = next(
+        (
+            item for item in node_group.interface.items_tree
+            if item.item_type == "SOCKET" and item.in_out == "INPUT"
+            and item.name == "Mask"
+        ),
+        None,
+    )
+    if mask_input is None:
+        mask_input = node_group.interface.new_socket(
+            name="Mask", in_out="INPUT", socket_type="NodeSocketFloat"
+        )
+        mask_input.default_value = 1.0
+        mask_input.min_value = 0.0
+        mask_input.max_value = 1.0
+        mask_input.description = (
+            "Multiply Influence Range by a Hair Tool input mask; "
+            "use the arrow menu for attributes, textures, noise and other masks"
+        )
+        # Blender initializes sockets on existing group instances to zero when
+        # new_socket runs, before the interface default can be set. Set only
+        # the newly added input to the neutral value; never reset an existing
+        # Mask, including its links or an intentionally authored zero.
+        for tree in bpy.data.node_groups:
+            for node in tree.nodes:
+                if node.type == "GROUP" and node.node_tree == node_group:
+                    node.inputs["Mask"].default_value = 1.0
+        for obj in bpy.data.objects:
+            for modifier in obj.modifiers:
+                if modifier.type == "NODES" and modifier.node_group == node_group:
+                    if hasattr(modifier, "properties"):
+                        modifier.properties.inputs[mask_input.identifier]["value"] = 1.0
+                    else:
+                        modifier[mask_input.identifier] = 1.0
+
+    multiply = node_group.nodes.get("HTUE Apply Input Mask")
+    if multiply is None:
+        group_input = node_group.nodes["HTUE Export Mask Input"]
+        combine = node_group.nodes["HTUE Grayscale Export Mask"]
+        multiply = node_group.nodes.new("ShaderNodeMath")
+        multiply.name = "HTUE Apply Input Mask"
+        multiply.operation = "MULTIPLY"
+        multiply.location = (-290.0, -320.0)
+        node_group.links.new(
+            group_input.outputs["Influence Range"], multiply.inputs[0]
+        )
+        node_group.links.new(group_input.outputs["Mask"], multiply.inputs[1])
+        for channel_index in range(3):
+            node_group.links.new(multiply.outputs[0], combine.inputs[channel_index])
+
+
 def _build_mask_group(definition):
     """Build one geometry pass-through that stores a grayscale color field."""
     name = definition["group_name"]
@@ -81,7 +134,7 @@ def _build_mask_group(definition):
     if node_group is None:
         node_group = bpy.data.node_groups.new(name, "GeometryNodeTree")
     elif (
-        int(node_group.get(GROUP_VERSION_PROPERTY, 0)) in {1, GROUP_VERSION}
+        int(node_group.get(GROUP_VERSION_PROPERTY, 0)) in {1, 2, GROUP_VERSION}
         and node_group.nodes.get(f"Store {definition['attribute_name']}") is not None
     ):
         # Upgrade storage in place: rebuilding an in-use group interface drops
@@ -90,6 +143,7 @@ def _build_mask_group(definition):
         attribute_type = definition.get("attribute_type", "BYTE_COLOR")
         if store.data_type != attribute_type:
             store.data_type = attribute_type
+        _ensure_input_mask(node_group)
         node_group[GROUP_VERSION_PROPERTY] = GROUP_VERSION
         return node_group
     else:
@@ -159,6 +213,7 @@ def _build_mask_group(definition):
         links.new(group_input.outputs["Influence Range"], combine.inputs[channel_index])
     links.new(combine.outputs["Color"], store.inputs["Value"])
     links.new(store.outputs["Geometry"], group_output.inputs["Geometry"])
+    _ensure_input_mask(node_group)
     node_group[GROUP_VERSION_PROPERTY] = GROUP_VERSION
     return node_group
 

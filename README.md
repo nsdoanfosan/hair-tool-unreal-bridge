@@ -198,7 +198,12 @@ not collide with Hair Tool's `SystemColor`, `Factor`, or `Depth` data. In the 3D
 View sidebar open **Unreal Bridge > Unreal Export Masks**, then add **Weight** or
 **Pixel Depth Offset** to the active Hair Tool subsystem. Each deformer starts with Hair
 Tool's editable Root-to-Tip influence curve and can use the same input-mask
-workflow as other Hair Tool deformers. The existing Hair Tool attribute preview
+workflow as other Hair Tool deformers. Use the separate **Mask** row's arrow
+menu for Color/Curve Attribute, Vertex Group, Texture, Noise, Randomize and
+the other native masks. The exported value is **Influence Range × Mask**;
+Mask defaults to 1, preserving existing Root/Center/Tip values. Saved v1/v2
+groups upgrade in place without replacing their existing sockets or links.
+The existing Hair Tool attribute preview
 also lists `ChaosWeight` and `HairPixelDepthOffset`. Both custom Deformers are
 registered as soon as the Bridge loads, so they also appear in Hair Tool's
 Deformer search and under **Add Deformer > Color > Unreal Export Masks**. Before
@@ -306,6 +311,7 @@ surface/flow, opacity, and Pixel Depth Offset are placed in clearly marked
 python -m pytest -q
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_smoke.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_export_masks_smoke.py
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python-exit-code 1 --python tests\blender_export_input_masks.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_profile_sync_smoke.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_weight_interpolation_smoke.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python-exit-code 1 --python tests\blender_preferred_material_smoke.py
@@ -327,6 +333,11 @@ detection, and revision/hash updates across two in-memory child materials.
 `tests/blender_weight_interpolation_smoke.py` reproduces the legacy byte-color
 overflow with real Catmull-Rom geometry and verifies float weights, late clamping,
 unchanged geometry, and migration of linked, in-use Weight groups.
+`tests/blender_export_input_masks.py` checks neutral-mask migration from v1/v2,
+preservation of authored values/links, and evaluated Influence Range × Mask.
+`tests/blender_native_export_input_masks.py` runs in an admitted live Hair Tool
+session after reloading the Bridge. It verifies the native Mask menu and actual
+add/stack/remove operators on temporary data, then removes that data.
 
 ### Component color availability
 
