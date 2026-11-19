@@ -1,4 +1,4 @@
-"""Keep hidden Hair Tool guides and their editable output selection consistent."""
+"""Keep Hair Tool source selection and localized color deformers editable."""
 
 import bpy
 from bpy.app.handlers import persistent
@@ -6,6 +6,7 @@ from bpy.app.handlers import persistent
 
 _MSGBUS_OWNER = object()
 _CHANGING_SELECTION = False
+_COLOR_DEFORMER_LABELS = {}
 
 
 def _shared_module():
@@ -14,6 +15,40 @@ def _shared_module():
     except ImportError:
         return None
     return hair_geometry_nodes_shared
+
+
+def register_localized_system_color_deformers():
+    """Expose the copied float SystemColor writers in Hair Tool's deformer list."""
+    shared = _shared_module()
+    if shared is None:
+        return
+    labels = shared.deformer_labels
+    native_label = labels.get(shared.HD_Color)
+    if not native_label:
+        return
+    for group in bpy.data.node_groups:
+        if group.bl_idname != "GeometryNodeTree" or not group.name.startswith("HD_Color Float · "):
+            continue
+        writer = group.nodes.get("Store Named Attribute")
+        if (
+            writer is not None
+            and writer.bl_idname == "GeometryNodeStoreNamedAttribute"
+            and writer.data_type == "FLOAT_COLOR"
+            and writer.inputs["Name"].default_value == "SystemColor"
+            and group.name not in labels
+        ):
+            labels[group.name] = native_label
+            _COLOR_DEFORMER_LABELS[group.name] = native_label
+
+
+def _remove_localized_system_color_deformers():
+    shared = _shared_module()
+    if shared is not None:
+        labels = shared.deformer_labels
+        for name, label in _COLOR_DEFORMER_LABELS.items():
+            if labels.get(name) == label:
+                del labels[name]
+    _COLOR_DEFORMER_LABELS.clear()
 
 
 def output_for_hidden_guide(context, source=None):
@@ -111,12 +146,15 @@ def _subscribe():
 
 @persistent
 def _on_load(_unused):
+    _remove_localized_system_color_deformers()
+    register_localized_system_color_deformers()
     _subscribe()
 
 
 def install_runtime_integration():
     if _shared_module() is None:
         return False
+    register_localized_system_color_deformers()
     _subscribe()
     if _on_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_on_load)
@@ -124,6 +162,7 @@ def install_runtime_integration():
 
 
 def remove_runtime_integration():
+    _remove_localized_system_color_deformers()
     bpy.msgbus.clear_by_owner(_MSGBUS_OWNER)
     if _on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_on_load)

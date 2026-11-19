@@ -373,15 +373,10 @@ def _apply_ao_settings_to_modifier(modifier, settings):
 
 
 def ensure_per_system_ao_modifier(obj, root):
-    """Ensure an assigned output has live Hair Tool AO in Per System mode."""
+    """Ensure an assigned output has live per-system Hair Tool AO."""
     settings = root.htue_ao_settings
     modifiers = ao_modifiers(obj)
     bridge_modifiers = bridge_ao_modifiers(obj)
-    if settings.evaluation_mode != "PER_SYSTEM":
-        for modifier in bridge_modifiers:
-            modifier.show_viewport = False
-            modifier.show_render = False
-        return None
     if bridge_modifiers:
         for modifier in bridge_modifiers:
             _apply_ao_settings_to_modifier(modifier, settings)
@@ -405,7 +400,6 @@ def ensure_per_system_ao_modifier(obj, root):
 
 def sync_per_system_ao_modifiers(root):
     """Push one export Empty's AO controls to its live Hair Tool outputs."""
-    settings = root.htue_ao_settings
     collection = export_collection()
     if collection is None:
         return []
@@ -416,12 +410,6 @@ def sync_per_system_ao_modifiers(root):
             or export_target(obj) != root
             or EXPORT_TARGET_PROPERTY not in obj
         ):
-            continue
-        if settings.evaluation_mode != "PER_SYSTEM":
-            for modifier in bridge_ao_modifiers(obj):
-                modifier.show_viewport = False
-                modifier.show_render = False
-            synchronized.append(obj)
             continue
         ensure_per_system_ao_modifier(obj, root)
         synchronized.append(obj)
@@ -744,7 +732,6 @@ def ao_bake_settings_state(root):
     settings = root.htue_ao_settings
     return {
         "initialized": bool(settings.initialized),
-        "evaluation_mode": settings.evaluation_mode,
         "combined_max_ray_distance": settings.combined_max_ray_distance,
         **{
             field: getattr(settings, field)
@@ -758,7 +745,6 @@ def restore_ao_bake_settings(root, state):
     pointer = root.as_pointer()
     _AO_INITIALIZATION_ROOTS.add(pointer)
     try:
-        settings.evaluation_mode = state["evaluation_mode"]
         settings.combined_max_ray_distance = state["combined_max_ray_distance"]
         for field in AO_MODIFIER_FIELDS:
             setattr(settings, field, state[field])
@@ -804,9 +790,25 @@ def initialize_ao_bake_settings(root):
 def initialize_existing_export_ao_settings():
     """Initialize already-linked export roots from Hair Tool AO modifiers."""
     initialized = []
+    collection = export_collection()
     for root in export_empties():
         settings = getattr(root, "htue_ao_settings", None)
-        if settings is None or settings.initialized or _first_ao_modifier(root) is None:
+        if settings is None:
+            continue
+        legacy_mode = settings.get("evaluation_mode")
+        if legacy_mode == 1:
+            # Old Combined mode disabled Bridge-owned live AO. Restore only
+            # those modifiers and keep native Hair Tool visibility choices.
+            for obj in collection.objects:
+                if export_target(obj) == root:
+                    for modifier in bridge_ao_modifiers(obj):
+                        _apply_ao_settings_to_modifier(modifier, settings)
+            for preview in _preview_objects(root):
+                if preview.get("_htue_ao_evaluation_mode") == "COMBINED":
+                    remove_combined_ao_preview(preview)
+        if legacy_mode is not None:
+            del settings["evaluation_mode"]
+        if settings.initialized or _first_ao_modifier(root) is None:
             continue
         try:
             initialize_ao_bake_settings(root)
@@ -821,8 +823,6 @@ def ao_bake_configuration(root):
     """Return the effective AO configuration without mutating Blender data."""
     settings = root.htue_ao_settings
     configuration = {
-        "evaluation_mode": settings.evaluation_mode,
-        "combined_max_ray_distance": settings.combined_max_ray_distance,
         **{
             field: getattr(settings, field)
             for field in AO_MODIFIER_FIELDS
@@ -925,7 +925,7 @@ def _preview_collection():
 
 
 def build_combined_ao_preview(material, context_object=None):
-    """Build the same joined-AO mesh used by Send to Unreal for one asset."""
+    """Display individual AO on a disposable joined preview mesh."""
     root = _find_export_root(context_object)
     if root is None:
         raise RuntimeError("Select a Hair Tool object under an exported Empty")
@@ -961,9 +961,7 @@ def build_combined_ao_preview(material, context_object=None):
                 hair_tool_export._evaluated_mesh_objects(
                     source,
                     state,
-                    include_system_ao=(
-                        ao_configuration["evaluation_mode"] == "PER_SYSTEM"
-                    ),
+                    include_system_ao=True,
                     ao_settings=ao_configuration,
                 )
             )
@@ -973,14 +971,7 @@ def build_combined_ao_preview(material, context_object=None):
         preview = hair_tool_export._join_objects(parts)
         preview.name = f"{root.name}__HTUE_COMBINED_AO_PREVIEW"
         preview.data.name = preview.name
-        if ao_configuration["evaluation_mode"] == "COMBINED":
-            hair_tool_export._evaluate_combined_ao(
-                preview,
-                state,
-                ao_settings=ao_configuration,
-            )
-        else:
-            hair_tool_export._preserve_per_system_ao(preview, state)
+        hair_tool_export._preserve_per_system_ao(preview, state)
         preview.data.name = preview.name
         hair_tool_export._remove_empty_material_slots(preview)
 
@@ -1000,7 +991,6 @@ def build_combined_ao_preview(material, context_object=None):
             # The exporter recorded the name before Blender finalized a suffix.
             stats = next(iter(state.get("ao_stats", {}).values()), {})
         preview["_htue_combined_ao_stats"] = json.dumps(stats)
-        preview["_htue_ao_evaluation_mode"] = ao_configuration["evaluation_mode"]
         preview["_htue_ao_bake_settings"] = json.dumps(ao_configuration)
         preview.pop("_htue_combined_ao_preview_stale", None)
         preview.hide_render = False

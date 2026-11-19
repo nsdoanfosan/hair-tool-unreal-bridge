@@ -61,7 +61,6 @@ class TestHairToolUnrealBridgeSchema(unittest.TestCase):
             "Tip Blend Mode",
             "ID Blend Mode",
             "Depth Blend Mode",
-            "System Blend Mode",
             "AO Blend Mode",
         ):
             self.assertEqual(scalars[parameter], 2.0)
@@ -72,6 +71,10 @@ class TestHairToolUnrealBridgeSchema(unittest.TestCase):
         self.assertNotIn("System Color 01", hair["vector_parameters"])
         self.assertNotIn("System Color 02", hair["vector_parameters"])
         self.assertNotIn("System Mask Contrast", hair["scalar_parameters"])
+        self.assertNotIn("System Blend Mode", hair["scalar_parameters"])
+        self.assertNotIn("System Color Influence", hair["scalar_parameters"])
+        self.assertNotIn("HT Base Color", hair["vector_parameters"])
+        self.assertEqual(hair["vector_parameters"]["System Color Fallback"], [0.1, 0.2, 0.3, 1.0])
         self.assertFalse(hair["vertex_uv_payload"]["system_color_alpha_used"])
         self.assertEqual(
             hair["vertex_uv_payload"]["system_color_source"],
@@ -102,7 +105,7 @@ class TestHairToolUnrealBridgeSchema(unittest.TestCase):
         hair = schema.build_contract("M_HT_Default_Material_01", settings())["hair_tool"]
         self.assertEqual(
             hair["layer_order"],
-            ["Base", "System", "Root", "Tip", "ID", "Depth", "AO"],
+            ["System", "Root", "Tip", "ID", "Depth", "AO"],
         )
         self.assertEqual(
             hair["source_ownership"]["hair_tool"],

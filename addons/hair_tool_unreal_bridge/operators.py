@@ -495,7 +495,7 @@ class HTUE_OT_RefreshContract(bpy.types.Operator):
 class HTUE_OT_BuildCombinedAOPreview(bpy.types.Operator):
     bl_idname = "htue.build_combined_ao_preview"
     bl_label = "Build / Refresh AO Preview"
-    bl_description = "Build the joined display mesh with the selected Hair Tool AO mode"
+    bl_description = "Preview the AO calculated separately by each Hair Tool system"
 
     def execute(self, context):
         material = _active_material(context)
@@ -511,14 +511,9 @@ class HTUE_OT_BuildCombinedAOPreview(bpy.types.Operator):
             if slot.material and getattr(slot.material.htue_settings, "initialized", False):
                 nodes.refresh_deformer_availability(slot.material)
         stats = result["stats"]
-        mode_name = (
-            "Combined"
-            if stats.get("source") == "combined_export_geometry"
-            else "Per System"
-        )
         self.report(
             {"INFO"},
-            f"{mode_name} AO preview: {len(result['sources'])} systems; "
+            f"Per-System AO preview: {len(result['sources'])} systems; "
             f"AO {stats.get('minimum', 1.0):.3f}-{stats.get('maximum', 1.0):.3f}",
         )
         return {"FINISHED"}

@@ -327,13 +327,12 @@ assert shader.inputs["Root Color Mix Factor"].default_value == 1.0
 assert not shader.inputs["Root Color Mix Factor"].is_linked
 assert stack.inputs["System Attribute Color"].links[0].from_node.bl_idname == "NodeGroupInput"
 for bridge_owned_input in (
-    "HT Base Color",
+    "System Color Fallback",
     "HT Root Color",
     "HT Root Mix",
     "HT Tip Color",
     "HT Tip Mix",
     "Depth Tint Influence",
-    "System Color Influence",
     "AO Color Influence",
 ):
     assert not stack.inputs[bridge_owned_input].is_linked, bridge_owned_input
@@ -386,8 +385,16 @@ assert changed_stack_inputs == ["HT Root Mix"], changed_stack_inputs
 root_zero = stack.node_tree.nodes["HTUE Root Range Zero Is Full"]
 assert root_zero.bl_idname == "ShaderNodeMix"
 
-# The replacement stack is ordered Base > System > Root > Tip > ID > Depth > AO.
-assert stack.node_tree.nodes["HTUE Stage Root Base"].inputs[0].links[0].from_node.name == "HTUE Stage System"
+# SystemColor is the base for the ordered Root > Tip > ID > Depth > AO stack.
+assert stack.inputs.get("HT Base Color") is None
+assert stack.inputs.get("System Blend Mode") is None
+assert stack.inputs.get("System Color Influence") is None
+system_base = stack.node_tree.nodes["HTUE System Base"]
+assert system_base.blend_type == "MIX"
+assert [socket.links[0].from_socket.name for socket in system_base.inputs] == [
+    "System Attribute Available", "System Color Fallback", "System Attribute Color",
+]
+assert stack.node_tree.nodes["HTUE Stage Root Base"].inputs[0].links[0].from_node == system_base
 assert stack.node_tree.nodes["HTUE Stage Tip Base"].inputs[0].links[0].from_node.name == "HTUE Stage Root"
 assert stack.node_tree.nodes["HTUE Stage ID Base"].inputs[0].links[0].from_node.name == "HTUE Stage Tip"
 assert stack.node_tree.nodes["HTUE Stage Depth Base"].inputs[0].links[0].from_node.name == "HTUE Stage ID"
@@ -570,29 +577,15 @@ assert deformer_sync.bridge_ao_modifiers(source_object) == [bridge_ao_modifier]
 ao_geo.name = original_ao_group_name
 empty_b.htue_ao_settings.samples = 17
 assert deformer_sync._modifier_input_get(bridge_ao_modifier, "Input_3") == 17
-empty_b.htue_ao_settings.evaluation_mode = "COMBINED"
-assert not bridge_ao_modifier.show_viewport
-assert not bridge_ao_modifier.show_render
-empty_b.htue_ao_settings.evaluation_mode = "PER_SYSTEM"
+# A saved Combined selection used to disable the Bridge-owned modifier.
+empty_b.htue_ao_settings["evaluation_mode"] = 1
+bridge_ao_modifier.show_viewport = False
+bridge_ao_modifier.show_render = False
+deformer_sync.initialize_existing_export_ao_settings()
+assert "evaluation_mode" not in empty_b.htue_ao_settings
 assert bridge_ao_modifier.show_viewport
 assert bridge_ao_modifier.show_render
 
-# Relinking a Bridge AO output directly into a Combined target disables only
-# the Bridge-owned live modifier; relinking to Per System enables it again.
-empty_combined = bpy.data.objects.new("Hair_Combined_SMOKE", None)
-export_collection.objects.link(empty_combined)
-empty_combined.htue_ao_settings.evaluation_mode = "COMBINED"
-assert bpy.ops.htue.assign_selected_to_export(
-    target_empty=empty_combined.name
-) == {"FINISHED"}
-assert system_root.parent == empty_combined
-assert not bridge_ao_modifier.show_viewport
-assert not bridge_ao_modifier.show_render
-assert bpy.ops.htue.assign_selected_to_export(target_empty=empty_b.name) == {"FINISHED"}
-assert system_root.parent == empty_b
-assert bridge_ao_modifier.show_viewport
-assert bridge_ao_modifier.show_render
-bpy.data.objects.remove(empty_combined, do_unlink=True)
 assert system_root.parent == empty_b
 assert system_root.matrix_world == original_root_matrix
 assert source_object.parent == original_parent
