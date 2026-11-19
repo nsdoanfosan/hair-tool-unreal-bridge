@@ -277,14 +277,14 @@ try:
 
     obsolete_scalars = sorted(
         set(scalar_parameters)
-        & {"System Mask Contrast", "System Mask Bias", "System Mask Invert"}
+        & {"System Mask Contrast", "System Mask Bias", "System Mask Invert",
+           "System Color Influence", "System Blend Mode"}
     )
     obsolete_vectors = sorted(
-        set(vector_parameters) & {"System Color 01", "System Color 02"}
+        set(vector_parameters) & {"System Color 01", "System Color 02", "HT Base Color"}
     )
     required_scalars = {
-        "System Color Influence",
-        "System Blend Mode",
+        "Whole Mesh AO Strength",
         "HT Root Mix",
         "HT Tip Mix",
         "AO Strength",
@@ -318,7 +318,15 @@ try:
         report["errors"].append(
             f"Expected one UV1.RG + UV3.G SystemColor assembly, got {rgb_assembly_count}"
         )
-    if tag_bounds != [5.99, 5.99, 7.01, 7.01]:
+    whole_ao_custom_tag = any(
+        node.get("class") == "MaterialExpressionCustom"
+        and "Whole mesh AO payload tag" in node.get("captions", [])
+        for node in expressions
+    )
+    bounds_match = tag_bounds == [5.99, 5.99, 7.01, 7.01, 7.99, 9.01]
+    if whole_ao_custom_tag:
+        bounds_match = tag_bounds == [5.99, 5.99, 7.01, 7.01]
+    if not bounds_match:
         report["errors"].append(f"Payload v3 tag bounds are wrong: {tag_bounds}")
     if not voxel_opacity_graph:
         report["errors"].append(
@@ -330,6 +338,8 @@ try:
         )
     if missing_scalars:
         report["errors"].append(f"Required synchronized parameters are missing: {missing_scalars}")
+    if "System Color Fallback" not in vector_parameters:
+        report["errors"].append("System Color Fallback is missing")
 
     expected_entries = {}
     if HANDOFF_JSON and HANDOFF_JSON.exists():
@@ -351,14 +361,9 @@ try:
         parent_path = parent.get_path_name() if parent else None
         instance_report = {
             "parent": parent_path,
-            "system_color_influence": float(
-                unreal.MaterialEditingLibrary.get_material_instance_scalar_parameter_value(
-                    instance, "System Color Influence"
-                )
-            ),
-            "system_blend_mode": float(
-                unreal.MaterialEditingLibrary.get_material_instance_scalar_parameter_value(
-                    instance, "System Blend Mode"
+            "system_color_fallback": linear_color_values(
+                unreal.MaterialEditingLibrary.get_material_instance_vector_parameter_value(
+                    instance, "System Color Fallback"
                 )
             ),
             "synchronized_parameter_count": 0,
@@ -366,7 +371,8 @@ try:
         }
         report["instances"][path] = instance_report
         parent_package = parent_path.split(".", 1)[0] if parent_path else None
-        if parent_package != MASTER:
+        expected_parent = MASTER.replace("M_HT_HairCards", "M_HT_SoftFuzz") if "_short_" in path else MASTER
+        if parent_package != expected_parent:
             report["errors"].append(f"Wrong parent for {path}: {parent_path}")
 
         expected_entry = expected_entries.get(path)

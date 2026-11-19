@@ -31,7 +31,7 @@ with tempfile.TemporaryDirectory(prefix='htue-refresh-qa-') as directory:
     material.htue_settings.texture_root = directory
     material.htue_settings.root_mix = 0.321
     material.htue_settings.tip_range = 0.654
-    material.htue_settings.system_color_influence = 0.876
+    material.htue_settings.base_color = (0.12, 0.34, 0.56, 1.0)
     host.inputs['Root Color Mix Factor'].default_value = 0.123
     host.inputs['Tip Color Mix Factor'].default_value = 0.456
     factor = material.node_tree.nodes.new('ShaderNodeValue')
@@ -70,6 +70,19 @@ with tempfile.TemporaryDirectory(prefix='htue-refresh-qa-') as directory:
     assert settings_state(material) == saved_settings
     assert shader_state(host) == saved_shader
     assert host.inputs['HTUE System Attribute Available'].is_linked
+
+    # An appended material can arrive in a file containing a different native
+    # shader with the same name as the clone's recorded original.
+    original_name = material[schema.ORIGINAL_SHADER_GROUP_PROPERTY]
+    unrelated = bpy.data.node_groups.new(original_name, 'ShaderNodeTree')
+    unrelated.interface.new_socket(name='Albedo', in_out='INPUT', socket_type='NodeSocketColor')
+    unrelated.interface.new_socket(name='Shader', in_out='OUTPUT', socket_type='NodeSocketShader')
+    nodes.setup_material(material)
+    assert settings_state(material) == saved_settings
+    assert shader_state(host) == saved_shader
+    assert host.node_tree.name == clone_name
+    assert material[schema.ORIGINAL_SHADER_GROUP_PROPERTY] == original_name
+    assert not unrelated.nodes
 
     # An incompatible clone must fail before altering existing hooks or groups.
     color = next(node for node in host.node_tree.nodes

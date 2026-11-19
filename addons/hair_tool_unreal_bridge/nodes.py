@@ -253,26 +253,15 @@ def _build_group(group, settings):
     eps = 0.001
     one = 1.0
 
-    # The bridge owns the color stack. Hair Tool contributes evaluated
-    # deformer attributes only; its legacy HairShaderMain blend result is not
-    # chained into this output. The order is deliberately identical to the
-    # Unreal master: Base -> System -> Root -> Tip -> ID -> Depth -> AO.
-    color = i["HT Base Color"]
-    system_influence = _math(
-        group,
-        "MULTIPLY",
-        i["System Color Influence"],
-        i["System Attribute Available"],
-        name="HTUE System Effective Influence",
-    )
-    color = _blend(
-        group,
-        "HTUE Stage System",
-        color,
-        i["System Attribute Color"],
-        system_influence,
-        i["System Blend Mode"],
-    )
+    # The presence mask selects the source, including authored black.
+    # Only the subsequent Root, Tip, ID, Depth and AO layers blend colors.
+    system_base = group.nodes.new("ShaderNodeMixRGB")
+    system_base.name = "HTUE System Base"
+    system_base.label = "SystemColor or missing-source fallback"
+    group.links.new(i["System Attribute Available"], system_base.inputs[0])
+    group.links.new(i[schema.SYSTEM_COLOR_FALLBACK], system_base.inputs[1])
+    group.links.new(i["System Attribute Color"], system_base.inputs[2])
+    color = system_base.outputs[0]
 
     # Unreal's hair master uses one shared Random/ID source for Root random,
     # Tip random, and the ID tint. ID Map Influence selects between Hair
@@ -332,6 +321,8 @@ def _build_group(group, settings):
     tip_delta = _math(group, "SUBTRACT", i["Factor"], tip_start)
     tip_safe = _math(group, "MAXIMUM", i["HT Tip Range"], eps)
     tip_mask = _clamp01(group, _math(group, "DIVIDE", tip_delta, tip_safe))
+    tip_range_enabled = _math(group, "GREATER_THAN", i["HT Tip Range"], 0.0)
+    tip_mask = _math(group, "MULTIPLY", tip_mask, tip_range_enabled)
     tip_random_value = _math(
         group,
         "ADD",
@@ -436,9 +427,6 @@ def initialise_settings(material, shader):
     )
     settings.roughness_minimum = _legacy_socket_value(
         shader, "SpecRoughness", settings.roughness_minimum
-    )
-    settings.system_color_influence = _legacy_socket_value(
-        shader, "Debug  Color  Mix", settings.system_color_influence
     )
     settings.initialized = True
 
@@ -793,26 +781,20 @@ def _remove_obsolete_top_level_nodes(tree):
             bpy.data.node_groups.remove(group)
 
 
-def _shader_refresh_template(material, shader):
-    """A material-only append can contain the clone without its unused original."""
-    current = shader.node_tree
-    original_name = str(material.get(schema.ORIGINAL_SHADER_GROUP_PROPERTY) or "")
-    original = bpy.data.node_groups.get(original_name) if original_name else None
-    if original is None or original.name.startswith(schema.SHADER_CLONE_PREFIX):
-        original = current
-
-    # Validate before removing any hooks or allocating replacement groups. A
-    # saved clone still contains the complete Hair Tool shader; replacing its
-    # Bridge-owned stack does not require inventing a new legacy original.
+def _shader_refresh_template(shader):
+    """Validate the active shader before replacing its Bridge-owned stack."""
+    # A material-only append can bring a valid clone into a file that already
+    # has a different HairShaderMain under the recorded original name.
+    template = shader.node_tree
     for name in (
         "Random Id [Map]", "Factor [Map]", "Depth [Map]",
         "Vert Color AO [Map]", "Debug Color",
     ):
-        _group_input_output(original, name)
+        _group_input_output(template, name)
     if not any(node.bl_idname == "NodeReroute" and node.label == "Color"
-               for node in original.nodes):
+               for node in template.nodes):
         raise RuntimeError("HairShaderMain final Color reroute was not found")
-    return original
+    return template
 
 
 def _remove_unused_color_stacks(stack_name, keep):
@@ -834,7 +816,7 @@ def setup_material(material):
         legacy_top_level = shader is not None
     if shader is None:
         raise RuntimeError(f"{material.name}: HairShaderMain-compatible node was not found")
-    template = None if legacy_top_level else _shader_refresh_template(material, shader)
+    template = None if legacy_top_level else _shader_refresh_template(shader)
     settings = material.htue_settings
     if not settings.initialized:
         initialise_settings(material, shader)

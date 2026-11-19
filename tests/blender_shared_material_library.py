@@ -24,7 +24,7 @@ registry_path = profile_sync.registry_path(existing)
 registry_before = registry_path.read_bytes()
 record = profile_registry.load_registry(registry_path)['profiles'][existing.htue_settings.profile_id]
 # Reproduce a receiver that already has Short 01, with stale/unsaved controls.
-existing.htue_settings.system_blend_mode = 'ADD'
+existing.htue_settings.root_blend_mode = 'ADD'
 existing.htue_settings.root_mix = .123
 existing.htue_settings.profile_revision = max(0, int(record['revision']) - 1)
 mesh = bpy.data.meshes.new('Shared receiver assignment')

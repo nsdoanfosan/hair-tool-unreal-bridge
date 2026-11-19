@@ -92,6 +92,10 @@ class TestUnrealBuilderContract(unittest.TestCase):
         self.assertIn("sync_parameters = set", self.source)
         self.assertIn("param not in sync_parameters", self.source)
         self.assertIn("system_color_rgb", self.source)
+        self.assertIn("WHOLE_MESH_AO_UV_TAG = 8.0", self.source)
+        self.assertIn("whole_ao_weight", self.source)
+        self.assertNotIn('vector(material, "HT Base Color"', self.source)
+        self.assertNotIn('scalar(material, "System Blend Mode"', self.source)
         self.assertNotIn('vector(material, "System Color 01"', self.source)
         self.assertNotIn('vector(material, "System Color 02"', self.source)
         self.assertNotIn('scalar(material, "System Mask Contrast"', self.source)
@@ -99,13 +103,12 @@ class TestUnrealBuilderContract(unittest.TestCase):
     def test_material_instance_groups_mirror_the_blender_panel(self):
         expected_groups = (
             "01 | HTUE SYNC - Textures",
-            "02 | HTUE SYNC - Base",
-            "03 | HTUE SYNC - System Color",
-            "04 | HTUE SYNC - Root",
-            "05 | HTUE SYNC - Tip",
-            "06 | HTUE SYNC - ID",
-            "07 | HTUE SYNC - Depth",
-            "08 | HTUE SYNC - AO & Roughness",
+            "02 | HTUE SYNC - System Color",
+            "03 | HTUE SYNC - Root",
+            "04 | HTUE SYNC - Tip",
+            "05 | HTUE SYNC - ID",
+            "06 | HTUE SYNC - Depth",
+            "07 | HTUE SYNC - AO & Roughness",
             "90 | UNREAL ONLY - UV",
             "91 | UNREAL ONLY - Surface & Flow",
             "92 | UNREAL ONLY - Opacity",
@@ -115,12 +118,13 @@ class TestUnrealBuilderContract(unittest.TestCase):
 
     def test_unreal_color_stack_matches_blender_layer_order(self):
         order = (
-            "system_color_result = blend_stage",
+            "system_color_result = lerp",
             "root_result = blend_stage",
             "hair_tool_color = blend_stage",
             "id_result = blend_stage",
             "depth_result = blend_stage",
             "final_color = blend_stage",
+            "export_color = binary",
         )
         positions = [self.source.index(token) for token in order]
         self.assertEqual(positions, sorted(positions))

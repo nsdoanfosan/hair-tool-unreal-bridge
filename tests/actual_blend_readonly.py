@@ -53,12 +53,11 @@ for material_name in schema.TARGET_TEXTURE_SETS:
         "legacy_material_blends_disconnected": all(
             not stack.inputs[name].is_linked
             for name in (
-                "HT Base Color",
+                schema.SYSTEM_COLOR_FALLBACK,
                 "HT Root Color",
                 "HT Root Mix",
                 "HT Tip Color",
                 "HT Tip Mix",
-                "System Color Influence",
                 "AO Color Influence",
             )
         ),

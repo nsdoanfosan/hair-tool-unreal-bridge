@@ -40,18 +40,20 @@ RFAOS_UV_BA_INDEX = 3
 RFAOS_UV_TAG = 6.0
 RFAOS_UV_TAG_LOWER = 5.99
 RFAOS_UV_TAG_UPPER = 7.01
+WHOLE_MESH_AO_UV_TAG = 8.0
+WHOLE_MESH_AO_UV_TAG_LOWER = 7.99
+WHOLE_MESH_AO_UV_TAG_UPPER = 9.01
 OPACITY_ALPHA_COVERAGE_THRESHOLD = 0.3333
 
 # Material Instance groups mirror the Blender panel order. Synced controls are
 # deliberately separated from values that remain Unreal-only.
 GROUP_SYNC_TEXTURES = "01 | HTUE SYNC - Textures"
-GROUP_SYNC_BASE = "02 | HTUE SYNC - Base"
-GROUP_SYNC_SYSTEM = "03 | HTUE SYNC - System Color"
-GROUP_SYNC_ROOT = "04 | HTUE SYNC - Root"
-GROUP_SYNC_TIP = "05 | HTUE SYNC - Tip"
-GROUP_SYNC_ID = "06 | HTUE SYNC - ID"
-GROUP_SYNC_DEPTH = "07 | HTUE SYNC - Depth"
-GROUP_SYNC_AO = "08 | HTUE SYNC - AO & Roughness"
+GROUP_SYNC_SYSTEM = "02 | HTUE SYNC - System Color"
+GROUP_SYNC_ROOT = "03 | HTUE SYNC - Root"
+GROUP_SYNC_TIP = "04 | HTUE SYNC - Tip"
+GROUP_SYNC_ID = "05 | HTUE SYNC - ID"
+GROUP_SYNC_DEPTH = "06 | HTUE SYNC - Depth"
+GROUP_SYNC_AO = "07 | HTUE SYNC - AO & Roughness"
 GROUP_UNREAL_UV = "90 | UNREAL ONLY - UV"
 GROUP_UNREAL_SURFACE = "91 | UNREAL ONLY - Surface & Flow"
 GROUP_UNREAL_OPACITY = "92 | UNREAL ONLY - Opacity"
@@ -427,8 +429,8 @@ def build_master(material):
         "HTUE RGB NANITE-SAFE PAYLOAD V3\n"
         "UV1 HairTool_SystemColor_RG = SystemColor.RG | "
         "UV2 HairTool_RFAOS_RG = (6+PackUNorm8(Random,Depth), Factor) | "
-        "UV3 HairTool_AO_SystemB = (6+AO, SystemColor.B)\n"
-        "UV payload is used only when both tagged U values are in 5.99..7.01; "
+        "UV3 HairTool_AO_SystemB = (6+AO or 8+AO, SystemColor.B)\n"
+        "UV3.U uses the 8 tag when Vertex Color B contains a whole-mesh AO bake; "
         "otherwise VertexColor RGBA is preserved.",
         -4700,
         -2020,
@@ -476,11 +478,26 @@ def build_master(material):
         -4080,
         -1580,
     )
+    whole_mesh_ao_tag = interval_gate(
+        material,
+        uv_ba_u,
+        constant(material, WHOLE_MESH_AO_UV_TAG_LOWER, -4300, -855),
+        constant(material, WHOLE_MESH_AO_UV_TAG_UPPER, -4300, -765),
+        payload_zero,
+        payload_one,
+        -3860,
+        -700,
+    )
+    ao_offset = lerp(
+        material, payload_tag,
+        constant(material, WHOLE_MESH_AO_UV_TAG, -4300, -685),
+        whole_mesh_ao_tag, -4280, -1270,
+    )
     uv_ao_untagged = binary(
         material,
         "MaterialExpressionSubtract",
         uv_ba_u,
-        payload_tag,
+        ao_offset,
         -4080,
         -1350,
     )
@@ -613,6 +630,10 @@ def build_master(material):
         -3860,
         -900,
     )
+    uv_ba_tag_gate = binary(
+        material, "MaterialExpressionMax", uv_ba_tag_gate, whole_mesh_ao_tag,
+        -3650, -900,
+    )
     payload_gate = binary(
         material,
         "MaterialExpressionMultiply",
@@ -661,27 +682,22 @@ def build_master(material):
     id_map_influence = scalar(material, "ID Map Influence", 0.0, GROUP_SYNC_ID, 0, -4080, -1320, "0 matches Blender's exported Random attribute; 1 opts into the IRD.R ID map")
     id_driver = lerp(material, rfaos_random, ird, id_map_influence, -3400, -1460, "", "R")
 
-    base_color = vector(material, "HT Base Color", (0.02, 0.02, 0.02, 1), GROUP_SYNC_BASE, 0, -3160, -1740, "Bridge-owned base color")
-    comment(material, "02-07 | ORDERED COLOR STACK\nBase > System > Root > Tip > ID > Depth. Hair Tool deformers supply attributes; legacy HairShaderMain blending is not reused.", -3300, -1940, 4050, 2050)
-
-    system_influence = scalar(material, "System Color Influence", 1.0, GROUP_SYNC_SYSTEM, 0, -3160, -1660, "Strength of evaluated Hair Tool SystemColor.RGB; 0 disables the System stage")
-    system_blend_mode = scalar(material, "System Blend Mode", 4.0, GROUP_SYNC_SYSTEM, 1, -2960, -1660, "0 Normal, 1 Multiply, 2 Overlay, 3 Soft Light, 4 Add")
-    system_payload_influence = binary(
-        material,
-        "MaterialExpressionMultiply",
-        system_influence,
-        payload_gate,
-        -2700,
-        -1620,
+    fallback_color = vector(material, "System Color Fallback", (0.02, 0.02, 0.02, 1), GROUP_SYNC_SYSTEM, 0, -3160, -1740, "Color for meshes without authored SystemColor")
+    comment(material, "02-07 | ORDERED COLOR STACK\nSystemColor > Root > Tip > ID > Depth > Local AO", -3300, -1940, 4050, 2050)
+    system_presence = make(material, "MaterialExpressionIf", -2960, -1860)
+    presence_threshold = constant(material, -0.5, -3160, -1860)
+    connect(uv_ba_v, "", system_presence, "A")
+    connect(presence_threshold, "", system_presence, "B")
+    connect(payload_one, "", system_presence, "A > B")
+    connect(payload_zero, "", system_presence, "A == B")
+    connect(payload_zero, "", system_presence, "A < B")
+    system_gate = binary(
+        material, "MaterialExpressionMultiply", payload_gate, system_presence,
+        -2760, -1820,
     )
-    system_color_result = blend_stage(
-        material,
-        base_color,
-        system_color_rgb,
-        system_payload_influence,
-        system_blend_mode,
-        -2440,
-        -1740,
+    system_color_result = lerp(
+        material, fallback_color, system_color_rgb, system_gate, -2440, -1740,
+        "RGB",
     )
 
     root_color = vector(material, "HT Root Color", (0.299, 0.115, 0.037, 1), GROUP_SYNC_ROOT, 0, -3160, -1540, "Blender HairShaderMain Root Color")
@@ -798,7 +814,6 @@ def build_master(material):
     )
 
     hair_bsdf = make(material, "MaterialExpressionSubstrateHairBSDF", 2400, -540)
-    connect(final_color, "", hair_bsdf, "BaseColor")
     connect(scatter, "", hair_bsdf, "Scatter")
     connect(specular, "", hair_bsdf, "Specular")
     connect(roughness, "", hair_bsdf, "Roughness")
@@ -878,6 +893,27 @@ def build_master(material):
         -1640,
         1500,
     )
+    whole_ao_strength = scalar(
+        material, "Whole Mesh AO Strength", 1.0, GROUP_UNREAL_SURFACE, 8,
+        2120, -1650, "Vertex Color B from tagged whole-mesh bakes on source cards",
+    )
+    whole_ao_strength = unary(
+        material, "MaterialExpressionSaturate", whole_ao_strength, 2320, -1650,
+    )
+    whole_ao_valid = binary(
+        material, "MaterialExpressionMultiply", payload_gate, whole_mesh_ao_tag,
+        2400, -1450,
+    )
+    non_voxel = unary(material, "MaterialExpressionOneMinus", voxel_marker, 2400, -1300)
+    whole_ao_valid = binary(
+        material, "MaterialExpressionMultiply", whole_ao_valid, non_voxel, 2570, -1450,
+    )
+    whole_ao_weight = binary(
+        material, "MaterialExpressionMultiply", whole_ao_strength, whole_ao_valid, 2730, -1450,
+    )
+    whole_ao = lerp(material, one, voxel_coverage, whole_ao_weight, 2730, -1300)
+    export_color = binary(material, "MaterialExpressionMultiply", final_color, whole_ao, 2930, -920)
+    connect(export_color, "", hair_bsdf, "BaseColor")
     voxel_opacity = lerp(
         material,
         one,

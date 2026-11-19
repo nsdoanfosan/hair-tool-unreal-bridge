@@ -32,9 +32,10 @@ def _update_setting(field):
     return update
 
 
-def color_property(field, name, default):
+def color_property(field, name, default, *, description=""):
     return FloatVectorProperty(
         name=name,
+        description=description,
         subtype="COLOR",
         size=4,
         min=0.0,
@@ -91,23 +92,6 @@ def _update_ao_bake_setting(self, _context):
 
 class HTUE_AOBakeSettings(bpy.types.PropertyGroup):
     initialized: BoolProperty(default=False, options={"HIDDEN"})
-    evaluation_mode: EnumProperty(
-        name="AO Evaluation Mode",
-        items=(
-            (
-                "PER_SYSTEM",
-                "Per System",
-                "Evaluate AO on each Hair Tool system, then preserve it while joining",
-            ),
-            (
-                "COMBINED",
-                "Combined",
-                "Join the generated card geometry first, then evaluate AO once",
-            ),
-        ),
-        default="PER_SYSTEM",
-        update=_update_ao_bake_setting,
-    )
     samples: IntProperty(
         name="Samples", min=1, max=64, default=8, update=_update_ao_bake_setting
     )
@@ -144,17 +128,16 @@ class HTUE_AOBakeSettings(bpy.types.PropertyGroup):
         update=_update_ao_bake_setting,
     )
     combined_max_ray_distance: FloatProperty(
-        name="Max Ray Distance",
+        name="Whole Mesh AO Distance",
         description=(
-            "Maximum Hair Tool AO ray distance used only after the generated "
-            "systems are joined in Combined mode"
+            "Ray distance for vertex color B during Send to Unreal, "
+            "including nearby hair and the same rig's face"
         ),
         subtype="DISTANCE",
         min=0.000001,
         soft_max=0.1,
         default=0.011,
         precision=4,
-        update=_update_ao_bake_setting,
     )
     use_custom_normals: BoolProperty(
         name="Use Custom Normals", default=False, update=_update_ao_bake_setting
@@ -191,7 +174,12 @@ class HTUE_MaterialSettings(bpy.types.PropertyGroup):
         update=_update_setting("texture_set"),
     )
 
-    base_color: color_property("base_color", "HT Base Color", (0.02, 0.02, 0.02, 1.0))
+    base_color: color_property(
+        "base_color",
+        schema.SYSTEM_COLOR_FALLBACK,
+        (0.02, 0.02, 0.02, 1.0),
+        description="Base color used when the rendered geometry has no SystemColor",
+    )
 
     root_color: color_property("root_color", "HT Root Color", (0.299, 0.115, 0.037, 1.0))
     root_mix: unit_property("root_mix", "HT Root Mix", 1.0)
@@ -242,11 +230,6 @@ class HTUE_MaterialSettings(bpy.types.PropertyGroup):
     depth_blend_mode: blend_property(
         "depth_blend_mode", "Depth Blend Mode", "OVERLAY"
     )
-
-    system_color_influence: unit_property(
-        "system_color_influence", "System Color Influence", 1.0
-    )
-    system_blend_mode: blend_property("system_blend_mode", "System Blend Mode", "ADD")
 
     ao_strength: unit_property("ao_strength", "AO Strength", 1.0)
     ao_vertex_influence: unit_property("ao_vertex_influence", "AO Vertex Influence", 1.0)

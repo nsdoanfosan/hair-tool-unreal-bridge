@@ -54,11 +54,14 @@ BLEND_MODE_ITEMS = (
     ("MULTIPLY", "Multiply", "Multiply the previous color by the layer color", 1),
     ("OVERLAY", "Overlay", "Overlay contrast while retaining the previous color", 2),
     ("SOFT_LIGHT", "Soft Light", "Apply a softer contrast-preserving blend", 3),
-    ("ADD", "Add", "Add the layer color; matches legacy HairShaderMain SystemColor", 4),
+    ("ADD", "Add", "Add the layer color", 4),
 )
 
+SYSTEM_COLOR_FALLBACK = "System Color Fallback"
+
 VECTOR_FIELDS = {
-    "base_color": "HT Base Color",
+    # Preserve the saved Blender property and shared profile key.
+    "base_color": SYSTEM_COLOR_FALLBACK,
     "root_color": "HT Root Color",
     "tip_color": "HT Tip Color",
     "id_tint_color": "ID Tint Color",
@@ -84,8 +87,6 @@ SCALAR_FIELDS = {
     "depth_map_influence": "Depth Map Influence",
     "depth_tint_influence": "Depth Tint Influence",
     "depth_blend_mode": "Depth Blend Mode",
-    "system_color_influence": "System Color Influence",
-    "system_blend_mode": "System Blend Mode",
     "ao_strength": "AO Strength",
     "ao_vertex_influence": "AO Vertex Influence",
     "ao_texture_influence": "AO Texture Influence",
@@ -99,7 +100,6 @@ BLEND_FIELDS = {
     "tip_blend_mode",
     "id_blend_mode",
     "depth_blend_mode",
-    "system_blend_mode",
     "ao_blend_mode",
 }
 
@@ -155,10 +155,10 @@ def build_contract(material_name, settings):
         "hair_tool": {
             "contract_version": CONTRACT_VERSION,
             "control_source_material": material_name,
-            "layer_order": ["Base", "System", "Root", "Tip", "ID", "Depth", "AO"],
+            "layer_order": ["System", "Root", "Tip", "ID", "Depth", "AO"],
             "source_ownership": {
                 "hair_tool": "evaluated deformer attributes only",
-                "bridge": "colors, strengths and blend modes",
+                "bridge": "system fallback and layer controls",
                 "legacy_hair_shader_blending": "ignored",
             },
             "blend_mode_legend": {
@@ -172,7 +172,7 @@ def build_contract(material_name, settings):
                 "name": "RFAOS",
                 "R": "HairPixelDepthOffset export attribute; neutral fallback 1",
                 "G": "ChaosWeight export attribute; neutral fallback 0",
-                "B": "Ambient AO vertex source",
+                "B": "Whole Mesh AO baked at Send to Unreal export",
                 "A": "Reserved compatibility channel; SystemColor Alpha is ignored",
             },
             "vertex_uv_payload": {
@@ -181,7 +181,7 @@ def build_contract(material_name, settings):
                 "UV1.RG": "SystemColor.RG in linear color space",
                 "UV2.R": "6 + packed UNORM8 Random/Depth",
                 "UV2.G": "Factor",
-                "UV3.R": "6 + Ambient AO",
+                "UV3.R": "6 + Per-System AO, or 8 + Per-System AO when Vertex Color B has a whole-mesh bake",
                 "UV3.G": "SystemColor.B in linear color space",
                 "system_color_source": "evaluated SystemColor.RGB",
                 "system_color_alpha_used": False,
@@ -190,7 +190,7 @@ def build_contract(material_name, settings):
                 "IRD Map.R": "ID texture source",
                 "IRD Map.G": "Root texture source; OneMinus is Tip texture source",
                 "IRD Map.B": "Depth texture source",
-                "ORM Map.R": "Ambient AO texture source",
+                "ORM Map.R": "Texture AO map",
             },
             "sync_parameters": sync_parameters,
             "vector_parameters": vectors,

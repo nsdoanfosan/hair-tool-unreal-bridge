@@ -16,7 +16,8 @@ the materials to be present and does not import them.
 Blender–Unreal material integration add-on. It currently keeps Hair Tool card
 controls synchronized and provides a lightweight `M_LayerBlend` Height preview
 for clearance and silhouette checks in Blender 5.1. It does not modify Hair
-Tool's own add-on files or node groups. The Python package and Git repository
+Tool's own add-on files or shipped templates. Scene-local Profile groups can
+receive the attribute-transfer nodes described below. The Python package and Git repository
 retain the legacy `hair_tool_unreal_bridge` name so existing `.blend` files,
 scripts, and the Blender junction continue to work.
 
@@ -34,18 +35,35 @@ stack. Legacy material colors and mix controls are not connected to the new
 stack; Hair Tool supplies evaluated Deformer attributes only. The stack is
 evaluated in the same order in Blender and Unreal:
 
-1. `HT Base Color`
-2. System Color (evaluated Hair Tool `SystemColor.RGB` in both renderers)
-3. Root (`RFAOS.G`, optionally `IRD Map.G`; random source is `RFAOS.R` or `IRD Map.R`)
-4. Tip (`RFAOS.G`, optionally `OneMinus(IRD Map.G)`; same shared random source)
-5. ID tint (the same `RFAOS.R` or `IRD Map.R` source)
-6. Depth tint (`Depth` vertex attribute or `IRD Map.B`)
-7. AO (`RFAOS.B` and `ORM Map.R`)
+1. System Color (evaluated linear `SystemColor.RGB` is the base in both renderers)
+2. Root (vertex Factor and optional `IRD Map.G`; random source is vertex Random or `IRD Map.R`)
+3. Tip (vertex Factor and optional `OneMinus(IRD Map.G)`; same shared random source)
+4. ID tint (the same vertex Random or `IRD Map.R` source)
+5. Depth tint (`Depth` vertex attribute or `IRD Map.B`)
+6. AO (per-system `UV3.R - 6` and texture `ORM Map.R`)
 
-Each color stage exposes `Normal`, `Multiply`, `Overlay`, `Soft Light`, and
-`Add`. Blender UI labels and Unreal material parameter names are identical.
+`System Color Fallback` supplies the base only when the source is missing.
+Root through AO expose `Normal`, `Multiply`, `Overlay`, `Soft Light`, and `Add`.
+Export-only Whole Mesh AO is outside the shared preview color stack.
 Opacity, Pixel Depth Offset, Hair BSDF-only surface controls, and other
 Unreal-only rendering controls remain owned by Unreal.
+
+Scene-local Profiles preserve `_htue_system_color_present` before joining
+curve and mesh components. This distinguishes missing color from authored
+black, including black with alpha zero. The Blender shader uses this per-point
+marker, with the existing object gate for older unmarked data. Send2UE keeps
+the marker and writes the existing v3 absent-color sentinel (raw System B=-1).
+
+For mesh receivers, an uncolored source mesh inherits `SystemColor` from the
+nearest generated hair card in the Profile's final mesh branch. This follows
+the actual Set SystemColor deformer dynamically; it does not bake a fallback
+RGB, inspect color brightness, or use color alpha as an influence. Authored
+mesh colors are preserved. The original mesh input to Capture Curve Attributes
+is kept separate to avoid a dependency cycle. Profile interfaces, native
+deformer controls, topology, and UVs remain intact.
+
+Regression test: `blender --factory-startup --background --python tests/blender_component_presence.py`.
+The disposable test performs no file or preference saves.
 
 `Set Factor`, `Set System Color`, Random, AO, and Depth stay connected through
 Hair Tool's own Attribute nodes. A missing native input is filled without
@@ -55,30 +73,21 @@ while the evaluated Python data exposes no attributes and cannot convert to a
 mesh. The Bridge therefore verifies reachable `Store Named Attribute` nodes on
 the final Geometry path and refreshes SystemColor availability only after a
 relevant geometry or node-tree update. Missing Blender AO data is neutralized inside the preview; AO is
-enabled only when it exists on evaluated viewport geometry. The bridge does not
-force the expensive AO generator onto every live system. In **Per System** mode,
-only an explicitly linked final output that has no native AO modifier receives
-a reversible Bridge-owned `HT_Mesh_AO` modifier. The Empty AO controls update
-that fallback modifier in the viewport; native Hair Tool AO modifiers remain
-unchanged. Switching that output to **Combined** disables only the Bridge-owned
-live modifier, because Combined AO is evaluated on the joined preview/export
-geometry. The 3D View sidebar has a dedicated **Unreal Bridge** tab. AO evaluation
-is an explicit per-export-Empty choice: **Per System** evaluates each Hair Tool
-system before joining, while **Combined** joins only generated cards and then
-evaluates AO once. There is no automatic mode switch. `_02` defaults to Per
-System because its tested combined mean fell from `0.543` to `0.236`. Samples,
-Spread Angle, Base Color Value, Blur, Bounce factors, and Custom Normals are
-stored on the Empty and applied to disposable export copies plus that
-Bridge-owned fallback. Blender and Unreal consume the same AO attribute. The
-editable systems are only hidden and can be restored with **Return to Live Hair
-Tool**.
-Material edits remain live on the cached preview; geometry edits require
-Refresh. Send to Unreal always follows the selected AO order. `AO
-Strength` softens excessive card self-occlusion in both renderers without
-disabling the AO layer. Hair Tool's safe Map Range behavior is also preserved:
-`HT Root Range = 0` means a full Root layer, not a disabled one.
-Starting Send to Unreal automatically removes the display cache and restores
-the original live Hair Tool systems before it evaluates the export.
+enabled only when it exists on evaluated viewport geometry.
+
+| Input | Source | Unreal transport |
+| --- | --- | --- |
+| Texture AO map | Hair card textures | `ORM Map.R` |
+| Per-System AO | Hair Tool `AO`, evaluated on each system before joining | `UV3.R - 6` |
+| Whole Mesh AO | Send to Unreal ray bake against the final cards and the same rig's face and export meshes | `VertexColor.B` |
+
+An explicitly linked final output without native AO receives a reversible
+Bridge-owned `HT_Mesh_AO` modifier. The Empty's per-system settings apply to
+that modifier and to disposable evaluated export meshes. **Preview Per-System
+AO** displays the cached per-system result. **Return to Live Hair Tool**
+restores the editable systems. Geometry edits require refreshing the preview.
+Send to Unreal restores the live systems before evaluation. The Empty's
+**Whole Mesh AO Distance** is used only during export.
 
 ## Creating a new Prism Mesh Guide
 
@@ -219,7 +228,7 @@ validates the signed values (negative weights fall back to zero) before writing
 the final 8-bit vertex G channel.
 
 Send to Unreal packs only the disposable evaluated export mesh as
-`RFAOS.R = HairPixelDepthOffset`, `RFAOS.G = ChaosWeight`, `RFAOS.B = AO`, and
+`RFAOS.R = HairPixelDepthOffset`, `RFAOS.G = ChaosWeight`, `RFAOS.B = HairWholeMeshAO`, and
 `RFAOS.A = 1`. Missing Weight is safely fixed at zero; missing Pixel Depth
 Offset uses neutral one. Nanite material data remains in UV1-UV3. Vertex G is
 reserved for Chaos Cloth Weight, while Vertex R is consumed by the hair
@@ -237,8 +246,8 @@ Send to Unreal exports:
 - UV0: card texture coordinates.
 - UV1: linear `SystemColor.RG`.
 - UV2: tagged, packed Random + Depth and Factor.
-- UV3: tagged AO and linear `SystemColor.B`.
-- Vertex color `RFAOS`: Random, Factor, AO, and a reserved legacy fallback.
+- UV3: tagged per-system AO and linear `SystemColor.B`.
+- Vertex color `RFAOS`: PDO mask, cloth Weight, whole-mesh AO, and alpha 1.
 - Flow, IRD, ORM, and Opacity texture roles.
 
 All four skeletal UV sets and both components are occupied in contract v3.
@@ -273,7 +282,7 @@ run Send to Unreal.
 
 Implementation-only sockets are hidden from Blender's recursive Surface UI.
 The compact **Hair Tool Unreal Bridge** UI uses native Blender 5.1 child panels
-for Source, Base, System Color, Root, Tip, ID, Depth, and AO/Roughness. Hair
+for Source, System Color, Root, Tip, ID, Depth, and AO/Roughness. Hair
 Tool's original Surface inputs remain available, but their legacy color mixing
 does not feed the replacement stack.
 For renderer parity, setup also changes each unlinked Hair Tool
@@ -284,6 +293,12 @@ Restore records and reinstates the original per-material socket value without
 editing Hair Tool's shared node group.
 Existing bridge materials are upgraded automatically when their `.blend` file
 is reopened; **Refresh Hooks + Unreal** also performs the UI migration immediately.
+**Refresh Hair Tool Connections** also works for standalone appended materials
+whose unused original HairShaderMain group was not included. It keeps the saved
+shader and user inputs, rebuilds only the Bridge-owned color stack, and restores
+the per-object SystemColor availability connection. Invalid shader templates
+are rejected before any existing hooks are removed. Fresh setups retain their
+original group across save/reload for later restoration.
 Interactive edits update only the one stack socket owned by the changed field;
 unchanged sockets and unchanged contract JSON are not rewritten. This avoids
 the repeated shader invalidation that previously caused white viewport flashes.
@@ -301,7 +316,7 @@ commandlet and the CodexMaterialTools plugin, with Unreal Editor closed so asset
 packages cannot be overwritten by two processes.
 
 Material Instance parameters follow the same numbered sections as Blender:
-Textures, Base, System Color, Root, Tip, ID, Depth, and AO/Roughness. UV,
+Textures, System Color, Root, Tip, ID, Depth, and AO/Roughness. UV,
 surface/flow, opacity, and Pixel Depth Offset are placed in clearly marked
 `UNREAL ONLY` groups at the bottom.
 
@@ -309,6 +324,7 @@ surface/flow, opacity, and Pixel Depth Offset are placed in clearly marked
 
 ```powershell
 python -m pytest -q
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python-exit-code 1 --python tests\blender_refresh_without_original.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_smoke.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python tests\blender_export_masks_smoke.py
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python-exit-code 1 --python tests\blender_export_input_masks.py

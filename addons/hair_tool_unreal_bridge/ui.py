@@ -29,12 +29,8 @@ def _draw_ao_workflow(layout, context):
 
     settings = root.htue_ao_settings
     layout.label(text=f"Asset: {root.name}", icon="OUTLINER_OB_EMPTY")
-    mode = layout.row(align=True)
-    mode.prop(settings, "evaluation_mode", expand=True)
-    if settings.evaluation_mode == "PER_SYSTEM":
-        layout.label(text="AO per system, then generated cards are joined")
-    else:
-        layout.label(text="Generated cards are joined, then AO runs once", icon="ERROR")
+    layout.label(text="Texture AO Map · ORM R")
+    layout.label(text="Per-System AO · UV3 R")
 
     values = layout.box()
     values.use_property_split = True
@@ -44,10 +40,11 @@ def _draw_ao_workflow(layout, context):
     values.prop(settings, "blur_steps")
     values.prop(settings, "first_bounce_factor")
     values.prop(settings, "second_bounce_factor")
-    if settings.evaluation_mode == "COMBINED":
-        values.prop(settings, "combined_max_ray_distance")
-        values.label(text="Shorter distance prevents cross-system over-occlusion")
     values.prop(settings, "use_custom_normals")
+
+    export = layout.box()
+    export.label(text="Whole Mesh AO · Vertex Color B · Send to Unreal")
+    export.prop(settings, "combined_max_ray_distance")
 
     state = deformer_sync.combined_ao_preview_state(context.object)
     if state["exists"]:
@@ -68,7 +65,7 @@ def _draw_ao_workflow(layout, context):
     else:
         layout.operator(
             "htue.build_combined_ao_preview",
-            text="Build AO Preview (Slower)",
+            text="Preview Per-System AO",
             icon="MOD_NORMALEDIT",
         )
 
@@ -109,7 +106,7 @@ class HTUE_PT_MaterialBridge(_HTUEPanel, bpy.types.Panel):
         status.label(text="Hair Tool Deformers drive masks", icon="LINKED")
         status.label(text="Unreal two-sided backface normals matched")
         status.label(text="Legacy HairShaderMain blending is ignored")
-        status.label(text="Base > System > Root > Tip > ID > Depth > AO")
+        status.label(text="System Color > Root > Tip > ID > Depth > AO")
         status.label(text="Unreal contract v3  |  31 synchronized parameters")
         profile_icon = {
             "SYNCED": "CHECKMARK",
@@ -180,18 +177,8 @@ class HTUE_PT_Source(_HTUEPanel, bpy.types.Panel):
         layout.prop(settings, "texture_root")
 
 
-class HTUE_PT_Base(_HTUEPanel, bpy.types.Panel):
-    bl_label = "02  Base"
-    bl_idname = "HTUE_PT_base"
-    bl_parent_id = "HTUE_PT_material_bridge"
-    bl_options = {"DEFAULT_CLOSED"}
-
-    def draw(self, context):
-        _settings_layout(self.layout).prop(context.material.htue_settings, "base_color")
-
-
 class HTUE_PT_System(_HTUEPanel, bpy.types.Panel):
-    bl_label = "03  System Color  |  Set System Color"
+    bl_label = "02  System Color  |  Base Color"
     bl_idname = "HTUE_PT_system"
     bl_parent_id = "HTUE_PT_material_bridge"
 
@@ -201,13 +188,11 @@ class HTUE_PT_System(_HTUEPanel, bpy.types.Panel):
         info = layout.box()
         info.label(text="Source: Hair Tool Deformer SystemColor.RGB", icon="COLOR")
         info.label(text="Unreal: UV1.RG + UV3.G  |  Alpha ignored")
-        _properties(layout, settings, (
-            "system_color_influence", "system_blend_mode",
-        ))
+        layout.prop(settings, "base_color")
 
 
 class HTUE_PT_Root(_HTUEPanel, bpy.types.Panel):
-    bl_label = "04  Root  |  Set Factor + Random/IRD"
+    bl_label = "03  Root  |  Set Factor + Random/IRD"
     bl_idname = "HTUE_PT_root"
     bl_parent_id = "HTUE_PT_material_bridge"
     bl_options = {"DEFAULT_CLOSED"}
@@ -225,7 +210,7 @@ class HTUE_PT_Root(_HTUEPanel, bpy.types.Panel):
 
 
 class HTUE_PT_Tip(_HTUEPanel, bpy.types.Panel):
-    bl_label = "05  Tip  |  Set Factor + Random/IRD"
+    bl_label = "04  Tip  |  Set Factor + Random/IRD"
     bl_idname = "HTUE_PT_tip"
     bl_parent_id = "HTUE_PT_material_bridge"
     bl_options = {"DEFAULT_CLOSED"}
@@ -240,7 +225,7 @@ class HTUE_PT_Tip(_HTUEPanel, bpy.types.Panel):
 
 
 class HTUE_PT_ID(_HTUEPanel, bpy.types.Panel):
-    bl_label = "06  ID  |  Random + IRD.R"
+    bl_label = "05  ID  |  Random + IRD.R"
     bl_idname = "HTUE_PT_id"
     bl_parent_id = "HTUE_PT_material_bridge"
     bl_options = {"DEFAULT_CLOSED"}
@@ -253,7 +238,7 @@ class HTUE_PT_ID(_HTUEPanel, bpy.types.Panel):
 
 
 class HTUE_PT_Depth(_HTUEPanel, bpy.types.Panel):
-    bl_label = "07  Depth  |  Hair Tool Depth + IRD.B"
+    bl_label = "06  Depth  |  Hair Tool Depth + IRD.B"
     bl_idname = "HTUE_PT_depth"
     bl_parent_id = "HTUE_PT_material_bridge"
     bl_options = {"DEFAULT_CLOSED"}
@@ -266,7 +251,7 @@ class HTUE_PT_Depth(_HTUEPanel, bpy.types.Panel):
 
 
 class HTUE_PT_AO(_HTUEPanel, bpy.types.Panel):
-    bl_label = "08  AO & Roughness  |  Hair Tool AO + ORM.R"
+    bl_label = "07  AO & Roughness  |  Hair Tool AO + ORM.R"
     bl_idname = "HTUE_PT_ao"
     bl_parent_id = "HTUE_PT_material_bridge"
     bl_options = {"DEFAULT_CLOSED"}
@@ -407,10 +392,7 @@ class HTUE_PT_SidebarExport(bpy.types.Panel):
                 layout.label(text="Not linked to Export collection", icon="UNLINKED")
             bridge_ao = deformer_sync.bridge_ao_modifiers(active)
             if bridge_ao:
-                if target is not None and target.htue_ao_settings.evaluation_mode == "COMBINED":
-                    layout.label(text="AO: joined preview/export (live fallback off)", icon="MOD_NORMALEDIT")
-                else:
-                    layout.label(text="AO: Bridge fallback for this output", icon="CHECKMARK")
+                layout.label(text="AO: Bridge fallback for this output", icon="CHECKMARK")
             elif deformer_sync.has_ao_modifier(active):
                 layout.label(text="AO: native Hair Tool modifier", icon="CHECKMARK")
             else:
@@ -463,7 +445,7 @@ class HTUE_PT_SidebarExport(bpy.types.Panel):
 
 
 class HTUE_PT_SidebarAO(bpy.types.Panel):
-    bl_label = "AO Evaluation & Preview"
+    bl_label = "Hair AO"
     bl_idname = "HTUE_PT_sidebar_ao"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -487,7 +469,6 @@ CLASSES = (
     HTUE_PT_MaterialBridge,
     HTUE_PT_Maintenance,
     HTUE_PT_Source,
-    HTUE_PT_Base,
     HTUE_PT_System,
     HTUE_PT_Root,
     HTUE_PT_Tip,
