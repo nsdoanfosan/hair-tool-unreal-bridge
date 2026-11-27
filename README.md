@@ -25,6 +25,14 @@ scripts, and the Blender junction continue to work.
 format mismatches and repairs selected Profiles using isolated UV copies.
 See [checks, repair limits and validation](docs/hair-uv-compatibility.md).
 
+**Unreal Bridge > Hair Tool Material Sync > Wet Preview** switches the
+viewport visibility of every editable modifier whose name contains `Wet` in the
+current scene, including modifiers on hidden objects. Both buttons work with
+any selection or with nothing selected. Names such as `Wet - Bangs` and
+`BackHair_wET` both match. Render visibility and individual node settings are
+preserved. Send to Unreal evaluates its exportable Hair Tool Wet strand filters
+separately for the Dry and Wet meshes.
+
 ## What is synchronized
 
 The add-on creates a reversible, per-material compatibility copy named

@@ -21,6 +21,23 @@ def _active_material(context):
     return material
 
 
+def _draw_wet_preview(layout, context):
+    filters = deformer_sync.scene_wet_filters(context)
+    if not filters and not deformer_sync.is_hair_tool_output(context.object):
+        return
+    box = layout.box()
+    box.label(text="Wet Preview")
+    if not filters:
+        box.label(text="Include Wet in the modifier name", icon="INFO")
+        return
+    wet_count = sum(modifier.show_viewport for modifier in filters)
+    row = box.row(align=True)
+    row.operator("htue.set_wet_preview", text="Dry", depress=wet_count == 0).enabled = False
+    row.operator("htue.set_wet_preview", text="Wet", depress=wet_count == len(filters)).enabled = True
+    if len(filters) > 1:
+        box.label(text=f"{wet_count} of {len(filters)} Wet modifiers on in viewport")
+
+
 def _draw_ao_workflow(layout, context):
     root = deformer_sync._find_export_root(context.object)
     if root is None:
@@ -275,7 +292,7 @@ class HTUE_PT_Sidebar(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return context.object is not None
+        return context.object is not None or bool(deformer_sync.scene_wet_filters(context))
 
     def draw(self, context):
         layout = self.layout
@@ -284,6 +301,7 @@ class HTUE_PT_Sidebar(bpy.types.Panel):
         layout.operator("htue.load_shared_materials", icon="APPEND_BLEND")
         if root is not None:
             layout.label(text=root.name, icon="OUTLINER_OB_EMPTY")
+        _draw_wet_preview(layout, context)
         if material is None:
             layout.label(text="No active hair material", icon="INFO")
             return

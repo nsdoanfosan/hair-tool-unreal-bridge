@@ -1,5 +1,5 @@
 import bpy
-from bpy.props import EnumProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from . import contract, deformer_sync, nodes, profile_sync, schema
 
@@ -492,6 +492,28 @@ class HTUE_OT_RefreshContract(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class HTUE_OT_SetWetPreview(bpy.types.Operator):
+    bl_idname = "htue.set_wet_preview"
+    bl_label = "Set Wet Preview"
+    bl_description = "Switch viewport visibility for every modifier in this scene with Wet in its name"
+    bl_options = {"UNDO"}
+
+    enabled: BoolProperty(name="Wet", default=False)
+
+    @classmethod
+    def poll(cls, context):
+        return bool(deformer_sync.scene_wet_filters(context))
+
+    def execute(self, context):
+        filters = deformer_sync.scene_wet_filters(context)
+        if not filters:
+            return {"CANCELLED"}
+        for modifier in filters:
+            if modifier.show_viewport != self.enabled:
+                modifier.show_viewport = self.enabled
+        return {"FINISHED"}
+
+
 class HTUE_OT_BuildCombinedAOPreview(bpy.types.Operator):
     bl_idname = "htue.build_combined_ao_preview"
     bl_label = "Build / Refresh AO Preview"
@@ -548,6 +570,7 @@ CLASSES = (
     HTUE_OT_SyncSharedProfile,
     HTUE_OT_RestoreActiveMaterial,
     HTUE_OT_RefreshContract,
+    HTUE_OT_SetWetPreview,
     HTUE_OT_BuildCombinedAOPreview,
     HTUE_OT_RemoveCombinedAOPreview,
 )
