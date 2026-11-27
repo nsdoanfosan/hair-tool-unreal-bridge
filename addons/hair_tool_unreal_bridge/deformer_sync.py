@@ -205,6 +205,17 @@ def selected_hair_tool_outputs(context, render_only=True):
     ]
 
 
+def scene_wet_filters(context):
+    """Collect editable modifiers named Wet anywhere in the current scene."""
+    return [
+        modifier
+        for obj in context.scene.objects
+        if obj.is_editable
+        for modifier in obj.modifiers
+        if "wet" in modifier.name.casefold() and not modifier.is_property_readonly("show_viewport")
+    ]
+
+
 def export_collection_name():
     try:
         from send2ue.constants import ToolInfo
